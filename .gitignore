@@ -1,0 +1,13 @@
+.env
+node_modules/
+frontend/dist/
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+playwright-report/
+test-results/
+coverage/
+.DS_Store
+backend/roadmap

@@ -1,0 +1,9 @@
+.git
+.env
+**/node_modules
+**/data
+**/*.db*
+**/test-results
+**/playwright-report
+frontend/dist
+backend/roadmap

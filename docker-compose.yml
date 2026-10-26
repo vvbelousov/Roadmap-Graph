@@ -1,0 +1,24 @@
+services:
+  roadmap:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ROADMAP_PASSWORD: ${ROADMAP_PASSWORD:?Set ROADMAP_PASSWORD in .env (at least 12 characters)}
+      ROADMAP_COOKIE_SECURE: ${ROADMAP_COOKIE_SECURE:-false}
+      ROADMAP_DEMO: ${ROADMAP_DEMO:-false}
+      ROADMAP_ADDR: :8080
+      ROADMAP_DB: /data/roadmap.db
+      ROADMAP_STATIC: /app/public
+    volumes:
+      - roadmap-data:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  roadmap-data:

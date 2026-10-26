@@ -1,0 +1,1 @@
+{"name":"roadmap-graph","version":"0.1.0","private":true,"scripts":{"dev":"node scripts/dev.mjs","build":"npm --prefix frontend run build && cd backend && go build -o roadmap ./cmd/roadmap"}}
