@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { en, ru } from "./i18n";
+  import TrackerPanel from "./lib/TrackerPanel.svelte";
   import {
     chain,
     edgePath,
@@ -571,6 +572,7 @@
               ></select
             ></label
           ><button onclick={logout}>{t.logout}</button>
+          <TrackerPanel {api} {lang} {projects} onchange={load} />
         </section>
       {:else if page === "projects"}<div class="page-heading">
           <div>
@@ -774,6 +776,7 @@
                       height="108"
                       fill={p.color}
                       opacity=".035"
+                      pointer-events="none"
                       rx="8"
                     /><line
                       x1="0"
@@ -867,7 +870,13 @@
                           choose(m);
                         }
                       }}
-                      ><circle
+                      ><rect
+                        x={pos.x - 16}
+                        y={pos.y - 16}
+                        width="32"
+                        height="32"
+                        fill="transparent"
+                      /><circle
                         cx={pos.x}
                         cy={pos.y}
                         r={selected === m.id || hovered === m.id ? 15 : 11}
@@ -1006,6 +1015,13 @@
           >
         </div>
         <div class="detail-content">
+          <TrackerPanel
+            {api}
+            {lang}
+            {projects}
+            milestoneID={current.id}
+            onchange={load}
+          />
           <div class="metadata">
             <div>
               <span>{t.planned_date}</span><strong
@@ -1148,7 +1164,12 @@
         )}</small
       >{#if tooltip.m.description}<p>{tooltip.m.description}</p>{/if}
     </div>{/if}
-  <dialog bind:this={dialog} onclose={() => (modal = "")}>
+  <dialog
+    bind:this={dialog}
+    onclose={() => {
+      if (!dialog.open) modal = "";
+    }}
+  >
     <form
       onsubmit={(e) => {
         e.preventDefault();
@@ -1194,7 +1215,10 @@
             bind:value={form.title}
           /></label
         ><label
-          >{t.project}<select bind:value={form.project_id} required
+          >{t.project}<select
+            aria-label={t.project}
+            bind:value={form.project_id}
+            required
             >{#each projects as p}<option value={p.id}>{p.name}</option
               >{/each}</select
           ></label
@@ -1238,6 +1262,7 @@
         >
       {:else if modal === "dependency"}<label
           >{t.prerequisite}<select
+            aria-label={t.prerequisite}
             required
             bind:value={form.prerequisite_milestone_id}
             >{#each graph.milestones as m}<option value={m.id}
@@ -1248,6 +1273,7 @@
         <div class="direction-hint">↓ {t.requires} ↑</div>
         <label
           >{t.dependent}<select
+            aria-label={t.dependent}
             required
             bind:value={form.dependent_milestone_id}
             >{#each graph.milestones as m}<option value={m.id}

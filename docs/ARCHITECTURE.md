@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-One deployment unit: a Go HTTP server and its static Svelte/Vite production build. SQLite is the only data service. The Go SQLite driver uses CGO, so the Debian build and runtime stages share a compatible libc. No Redis, workers, external APIs or infrastructure accounts are required.
+One deployment unit: a Go HTTP server and its static Svelte/Vite production build. SQLite is the only data service. The Go SQLite driver uses CGO, so the Debian build and runtime stages share a compatible libc. No Redis or separate workers are required. An optional in-process poller connects to the official Yandex Tracker API; local use requires no external account.
 
 The UI loads `/api/graph` as one consistent rendering input. SVG is used for timeline lanes, markers and directed connections. Dates are calendar values `YYYY-MM-DD`, not user-local midnight timestamps. All lanes share the same date-to-X mapping; reordering only changes Y coordinates.
 
@@ -26,4 +26,10 @@ The initial deployment is intended for a small trusted team sharing one account 
 
 ## Future decisions
 
-Keep date semantics and dependency direction stable in API versions. Before accepting external integrations, add revision/ETag handling to prevent silent concurrent edits. Before expanding authentication, decide whether local users or trusted proxy identity is the product's long-term direction. Benchmark visible SVG behavior on real target hardware before introducing canvas or graph virtualization.
+Keep date semantics and dependency direction stable in API versions. The optional Tracker integration uses version-checked issue PATCH and per-field synchronization baselines; status/link writes retain their documented concurrency limitations. Before expanding authentication, decide whether local users or trusted proxy identity is the product's long-term direction. Benchmark visible SVG behavior on real target hardware before introducing canvas or graph virtualization.
+
+## Tracker synchronization
+
+Migration 2 stores connection configuration and retry cooldowns without credentials, stable issue identity, acknowledged field baselines, conflicts, a transactional outbox, link presence baselines and expiring import snapshots in SQLite. The existing process runs polling with a connection lease and bounded execution; network requests never occur inside SQLite transactions. Local graph edits and their outgoing intent commit together. A three-way merge precedes every upload. Remote issue creation uses a persisted unique key and recovery lookup.
+
+See [Tracker architecture and operational limits](TRACKER.md) for ownership, recovery, direction semantics, request pacing and non-atomic distributed operations.

@@ -127,3 +127,9 @@ Single-user authentication only; no RBAC or SSO. Sessions are in memory. Multi-i
 ## License
 
 Original project source: Apache-2.0, see [LICENSE](LICENSE). Third-party dependencies retain their own licenses; lockfiles identify the dependencies. No proprietary reference branding or assets are included.
+
+## Yandex Tracker
+
+Optional bidirectional synchronization is disabled by default. Supply `ROADMAP_TRACKER_TOKEN` only to the backend, then configure the organization, selections, project grouping and explicit field/status/link mappings in Settings → Yandex Tracker. Preview and confirm imports before synchronizing. Milestone details expose publication, exclusion, synchronization errors and per-field conflict resolution. Existing local data and simulations work without Tracker.
+
+See [setup, mapping and recovery guide](docs/TRACKER.md) for authentication, concurrency guarantees, deletion behavior, retries, limits and test-organization acceptance checks.

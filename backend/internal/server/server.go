@@ -41,6 +41,7 @@ type Server struct {
 	sessions map[string]session
 	attempts map[string]attempt
 	writeMu  sync.Mutex
+	tracker  *trackerClient
 }
 
 func New(db *sql.DB, c Config) (*Server, error) {
@@ -53,6 +54,7 @@ func New(db *sql.DB, c Config) (*Server, error) {
 	}
 	c.Password = ""
 	s := &Server{db: db, cfg: c, hash: hash, mux: http.NewServeMux(), sessions: map[string]session{}, attempts: map[string]attempt{}}
+	s.tracker = newTrackerClient()
 	s.routes()
 	return s, nil
 }
@@ -128,6 +130,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 func (s *Server) routes() {
+	s.trackerRoutes()
 	s.mux.HandleFunc("PUT /api/projects/order", s.reorderProjects)
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if e := s.db.Ping(); e != nil {

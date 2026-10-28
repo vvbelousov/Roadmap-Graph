@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS tracker_connection(id TEXT PRIMARY KEY CHECK(id='tracker'), config TEXT NOT NULL, last_success TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', lease TEXT NOT NULL DEFAULT '', lease_until INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS tracker_records(external_id TEXT PRIMARY KEY, connection_id TEXT NOT NULL DEFAULT 'tracker', issue_key TEXT NOT NULL, local_id TEXT UNIQUE REFERENCES milestones(id) ON DELETE SET NULL, url TEXT NOT NULL, version INTEGER NOT NULL, baseline TEXT NOT NULL, state TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', conflicts TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS tracker_outbox(id TEXT PRIMARY KEY, local_id TEXT NOT NULL REFERENCES milestones(id) ON DELETE CASCADE, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', UNIQUE(local_id,kind));
+CREATE TABLE IF NOT EXISTS tracker_edges(edge_key TEXT PRIMARY KEY, baseline INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS tracker_previews(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, fingerprint TEXT NOT NULL, expires INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS tracker_retry(id TEXT PRIMARY KEY CHECK(id='tracker'), next_attempt INTEGER NOT NULL);
+INSERT OR IGNORE INTO schema_migrations VALUES(2);

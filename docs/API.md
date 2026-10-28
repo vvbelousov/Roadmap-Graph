@@ -72,3 +72,24 @@ A positive day difference is how much later the prerequisite is available than t
 ```
 
 Typical statuses: 400 malformed/unknown JSON fields, 401 unauthenticated, 403 CSRF failure or disabled demo, 404 missing entity, 409 conflicting database references/uniqueness, 422 validation failure or hard-dependency cycle, 429 login throttling, 500 database failure. JSON request bodies are limited to 1 MiB. No pagination is provided in the initial MVP.
+
+## Yandex Tracker
+
+All routes require the existing session and mutation CSRF header. Credentials are backend environment values, never request/response fields. Unknown config fields (including tokens or destination URLs) are rejected.
+
+| Method | Endpoint | Body / result |
+|---|---|---|
+| GET | `/api/tracker` | `config`, `records`, `outbox`, `last_success`, `last_error`, `running`; no credentials |
+| PUT | `/api/tracker/config` | Full config, see `docs/tracker-config.example.json`; field identity/format and existing status meaning changes require unlinking; permissions and new status keys can be adjusted safely |
+| POST | `/api/tracker/test` | Tests saved connection using current user endpoint |
+| POST | `/api/tracker/preview` | Persisted, expiring preview: `id`, `projects`, `milestones`, `links`, `skipped`, `warnings`; no graph writes |
+| POST | `/api/tracker/import` | `{ "preview_id": "..." }`; atomically applies unchanged preview |
+| POST | `/api/tracker/sync` | Returns 202 after scheduling; poll GET for results |
+| POST | `/api/tracker/retry` | Resets outbox attempt limits/backoff; then synchronize |
+| POST | `/api/tracker/milestones/{id}/publish` | `{ "selection": 0 }` zero-based queue destination; returns 202 after durable enqueue |
+| POST | `/api/tracker/milestones/{id}/unlink` | Excludes the stable external issue ID; clears its outgoing intent; retains both objects |
+| POST | `/api/tracker/milestones/{id}/resolve` | `{ "choices": { "title": "local", "description": "remote" } }`; choose every disputed field |
+
+Preview returns 409 on confirmation when local state/config has changed or the snapshot expired; request a fresh preview. Invalid mappings or unsupported values return 422. Connection failures expose sanitized messages and HTTP status codes, not remote response bodies. Link types are explicit; the configured `direction` marks the queried issue as prerequisite. Local mapped read-only field edits are rejected; unmapped field edits stay local. Deleting local milestones/projects excludes their Tracker records without deleting remote issues.
+
+The optional API `new_project` selection object accepts the normal Project fields (ID/timestamps generated internally); omit `project_id` when using it. The UI uses existing projects, which can be created through the normal project form. See [Tracker guide](TRACKER.md) for scope and concurrency semantics.

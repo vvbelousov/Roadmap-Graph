@@ -1,0 +1,190 @@
+// @vitest-environment happy-dom
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  cleanup,
+} from "@testing-library/svelte";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import TrackerPanel from "./TrackerPanel.svelte";
+afterEach(cleanup);
+function state() {
+  return {
+    config: {
+      enabled: false,
+      org_id: "",
+      org_header: "X-Org-ID",
+      auth: "OAuth",
+      poll_interval_seconds: 300,
+      selections: [],
+      fields: {
+        title: { field: "summary", writable: true, codec: "string" },
+        planned_date: { field: "dueDate", writable: true, codec: "date" },
+      },
+      statuses: {},
+      write_statuses: {},
+      links: [],
+    },
+    records: [],
+    outbox: [],
+    last_success: "",
+    last_error: "",
+    running: false,
+  } as any;
+}
+const projects = [
+  {
+    id: "p1",
+    name: "Core",
+    slug: "core",
+    description: "",
+    color: "#60a5fa",
+    icon: "",
+    sort_order: 0,
+  },
+];
+describe("Tracker UI", () => {
+  it("configures a connection, previews and confirms import without browser credentials", async () => {
+    const data = state();
+    const change = vi.fn();
+    const api = vi.fn(async (path: string, method = "GET", body?: any) => {
+      if (path === "/tracker/config") {
+        data.config = JSON.parse(JSON.stringify(body));
+        return body;
+      }
+      if (path === "/tracker/preview")
+        return {
+          id: "preview1",
+          projects: [],
+          milestones: [
+            {
+              issue_key: "CORE-1",
+              milestone: { title: "Core V2", planned_date: "2027-01-02" },
+            },
+          ],
+          links: [],
+          skipped: [
+            {
+              issue_key: "CORE-2",
+              reason: "Use ISO YYYY-MM-DD calendar dates",
+            },
+          ],
+          warnings: [],
+        };
+      return structuredClone(data);
+    });
+    render(TrackerPanel, {
+      props: { api, lang: "en", projects, onchange: change },
+    });
+    await fireEvent.input(await screen.findByLabelText("Organization ID"), {
+      target: { value: "org" },
+    });
+    await fireEvent.click(screen.getByLabelText("Enable integration"));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Add selection" }),
+    );
+    await fireEvent.input(screen.getByLabelText("Queue key"), {
+      target: { value: "CORE" },
+    });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Save Tracker settings" }),
+    );
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/tracker/config",
+        "PUT",
+        expect.objectContaining({
+          org_id: "org",
+          enabled: true,
+          selections: [{ queue: "CORE", query: "", project_id: "p1" }],
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Preview import" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Preview import" }),
+    );
+    await screen.findByText("CORE-1: Core V2 — 2027-01-02");
+    expect(api.mock.calls.some((c) => c[0] === "/tracker/import")).toBe(false);
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Confirm import" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Confirm import" }),
+    );
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("/tracker/import", "POST", {
+        preview_id: "preview1",
+      }),
+    );
+    expect(change).toHaveBeenCalled();
+    expect(screen.queryByLabelText(/token/i)).toBeNull();
+  });
+  it("shows separate sync conflicts and sends explicit per-field choices", async () => {
+    const data = state();
+    data.config.enabled = true;
+    data.records = [
+      {
+        local_id: "m1",
+        issue_key: "CORE-1",
+        url: "https://tracker.yandex.ru/CORE-1",
+        state: "conflict",
+        conflicts: {
+          title: {
+            baseline: "Old",
+            local: "Local title",
+            remote: "Tracker title",
+          },
+        },
+      },
+    ];
+    const api = vi.fn(async (..._args: any[]) => structuredClone(data));
+    render(TrackerPanel, { props: { api, lang: "en", milestoneID: "m1" } });
+    await screen.findByRole("heading", { name: "Synchronization conflict" });
+    const resolve = screen.getByRole("button", {
+      name: "Resolve selected values",
+    });
+    expect(resolve.hasAttribute("disabled")).toBe(true);
+    await fireEvent.click(
+      screen.getByLabelText("Keep Tracker value: Tracker title"),
+    );
+    await fireEvent.click(resolve);
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/tracker/milestones/m1/resolve",
+        "POST",
+        { choices: { title: "remote" } },
+      ),
+    );
+  });
+  it("publishes only through the explicit destination action and localizes controls", async () => {
+    const data = state();
+    data.config.enabled = true;
+    data.config.selections = [{ queue: "CORE", project_id: "p1" }];
+    const api = vi.fn(async (..._args: any[]) => structuredClone(data));
+    render(TrackerPanel, { props: { api, lang: "ru", milestoneID: "m1" } });
+    const publish = await screen.findByRole("button", {
+      name: "Опубликовать в Трекере",
+    });
+    expect(api.mock.calls.every((c) => c.length === 1)).toBe(true);
+    await fireEvent.click(publish);
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/tracker/milestones/m1/publish",
+        "POST",
+        { selection: 0 },
+      ),
+    );
+  });
+});

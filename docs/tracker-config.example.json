@@ -1,0 +1,26 @@
+{
+  "enabled": false,
+  "org_id": "REPLACE_ORGANIZATION_ID",
+  "org_header": "X-Org-ID",
+  "auth": "OAuth",
+  "poll_interval_seconds": 300,
+  "selections": [
+    {"queue": "CORE", "query": "", "project_id": "REPLACE_ROADMAP_PROJECT_ID"},
+    {"queue": "", "query": "Queue: ADX Type: Release", "project_id": "REPLACE_ANOTHER_PROJECT_ID"}
+  ],
+  "fields": {
+    "title": {"field": "summary", "writable": true, "codec": "string"},
+    "description": {"field": "description", "writable": true, "codec": "string"},
+    "planned_date": {"field": "dueDate", "writable": true, "codec": "date"},
+    "completed_date": {"field": "REPLACE_DATE_ONLY_COMPLETION_FIELD", "writable": true, "codec": "date"},
+    "status": {"field": "status", "writable": true, "codec": "status"},
+    "owner": {"field": "assignee", "writable": true, "codec": "id"},
+    "version": {"field": "fixVersions", "writable": true, "codec": "single_id"}
+  },
+  "statuses": {"open": "planned", "inProgress": "in_progress", "resolved": "completed", "cancelled": "cancelled"},
+  "write_statuses": {"planned": "open", "in_progress": "inProgress", "completed": "resolved", "cancelled": "cancelled"},
+  "links": [
+    {"type": "REPLACE_VERIFIED_DEPENDENCY_TYPE_ID", "direction": "outward", "local_type": "requires", "relationship": "is dependent by"},
+    {"type": "relates", "direction": "outward", "local_type": "related_to", "relationship": "relates"}
+  ]
+}

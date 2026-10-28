@@ -1,87 +1,151 @@
-import {test,expect} from '@playwright/test';
+import { test, expect } from "@playwright/test";
 
-test('authenticated roadmap CRUD, dependencies, conflicts and persistence',async({page})=>{
-  const password=process.env.ROADMAP_TEST_PASSWORD;
-  test.skip(!password,'Set ROADMAP_TEST_PASSWORD; run only against an isolated test database.');
-  await page.goto('/');
-  await page.getByLabel('Password',{exact:true}).fill(password!);
-  await page.getByRole('button',{name:/^Sign in/}).click();
-  await expect(page.getByRole('button',{name:'Add project',exact:true})).toBeVisible();
-  const suffix=Date.now().toString();
-  const projectName=`E2E ${suffix}`;
-  await page.getByRole('button',{name:'Add project',exact:true}).click();
-  await page.getByLabel('Name',{exact:true}).fill(projectName);
-  await page.getByLabel('Slug',{exact:true}).fill(`e2e-${suffix}`);
-  await page.getByRole('button',{name:'Save changes',exact:true}).click();
-  for(const [title,date] of [['Prerequisite '+suffix,'2027-03-10'],['Dependent '+suffix,'2027-04-10']]){
-    await page.getByRole('button',{name:/Add milestone/}).click();
-    await page.getByLabel('Title',{exact:true}).fill(title);
-    await page.getByLabel('Project',{exact:true}).selectOption({label:projectName});
-    await page.getByLabel('Planned date',{exact:true}).fill(date);
-    await page.getByRole('button',{name:'Save changes',exact:true}).click();
+test("authenticated roadmap CRUD, dependencies, conflicts and persistence", async ({
+  page,
+}) => {
+  const password = process.env.ROADMAP_TEST_PASSWORD;
+  test.skip(
+    !password,
+    "Set ROADMAP_TEST_PASSWORD; run only against an isolated test database.",
+  );
+  await page.goto("/");
+  await page.getByLabel("Password", { exact: true }).fill(password!);
+  await page.getByRole("button", { name: /^Sign in/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Add project", exact: true }),
+  ).toBeVisible();
+  const suffix = Date.now().toString();
+  const projectName = `E2E ${suffix}`;
+  await page.getByRole("button", { name: "Add project", exact: true }).click();
+  await page.getByLabel("Name", { exact: true }).fill(projectName);
+  await page.getByLabel("Slug", { exact: true }).fill(`e2e-${suffix}`);
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  for (const [title, date] of [
+    ["Prerequisite " + suffix, "2027-03-10"],
+    ["Dependent " + suffix, "2027-04-10"],
+  ]) {
+    await page.getByRole("button", { name: /Add milestone/ }).click();
+    await page.getByLabel("Title", { exact: true }).fill(title);
+    await page
+      .getByRole("combobox", { name: "Project", exact: true })
+      .selectOption({ label: projectName });
+    await page.getByLabel("Planned date", { exact: true }).fill(date);
+    await page
+      .getByRole("button", { name: "Save changes", exact: true })
+      .click();
   }
-  const dependent=page.getByRole('button',{name:'Dependent '+suffix,exact:true});
+  const dependent = page.getByRole("button", {
+    name: "Dependent " + suffix,
+    exact: true,
+  });
   await dependent.scrollIntoViewIfNeeded();
-  await dependent.click();
-  await page.getByRole('button',{name:'Add dependency',exact:true}).click();
-  await page.getByLabel('Prerequisite',{exact:true}).selectOption({label:projectName+' · Prerequisite '+suffix});
-  await page.getByLabel('Dependent',{exact:true}).selectOption({label:projectName+' · Dependent '+suffix});
-  await page.getByRole('button',{name:'Save changes',exact:true}).click();
-  const milestone=page.getByRole('button',{name:'Dependent '+suffix,exact:true});
+  await dependent.locator("circle").nth(1).click();
+  await page
+    .getByRole("button", { name: "Add dependency", exact: true })
+    .click();
+  await page
+    .getByRole("combobox", { name: "Prerequisite", exact: true })
+    .selectOption({ label: projectName + " · Prerequisite " + suffix });
+  await page
+    .getByRole("combobox", { name: "Dependent", exact: true })
+    .selectOption({ label: projectName + " · Dependent " + suffix });
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  const milestone = page.getByRole("button", {
+    name: "Dependent " + suffix,
+    exact: true,
+  });
   await milestone.scrollIntoViewIfNeeded();
-  await milestone.hover();
-  await expect(page.getByTestId('dependency-edge').first()).toBeVisible();
-  await expect(page.locator('[data-testid=dependency-edge][data-highlighted=true]').first()).toBeVisible();
-  await milestone.click();
-  await expect(page.getByRole('complementary',{name:'Milestone details'})).toBeVisible();
-  await page.getByRole('complementary',{name:'Milestone details'}).getByRole('button',{name:/Edit/}).click();
-  await page.getByLabel('Planned date',{exact:true}).fill('2027-03-01');
-  await page.getByRole('button',{name:'Save changes',exact:true}).click();
-  const conflicts=await page.request.get('/api/analysis/conflicts');
+  await milestone.locator("circle").nth(1).hover();
+  await expect(page.getByTestId("dependency-edge").first()).toBeVisible();
+  await expect(
+    page
+      .locator("[data-testid=dependency-edge][data-highlighted=true]")
+      .first(),
+  ).toBeVisible();
+  await milestone.locator("circle").nth(1).click();
+  await expect(
+    page.getByRole("complementary", { name: "Milestone details" }),
+  ).toBeVisible();
+  await page
+    .getByRole("complementary", { name: "Milestone details" })
+    .getByRole("button", { name: /Edit/ })
+    .click();
+  await page.getByLabel("Planned date", { exact: true }).fill("2027-03-01");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  const conflicts = await page.request.get("/api/analysis/conflicts");
   expect(conflicts.ok()).toBeTruthy();
-  expect((await conflicts.json()).some((c:{days:number})=>c.days===9)).toBeTruthy();
+  expect(
+    (await conflicts.json()).some((c: { days: number }) => c.days === 9),
+  ).toBeTruthy();
   await page.reload();
-  await expect(page.getByRole('button',{name:'Dependent '+suffix,exact:true})).toBeAttached();
-  const graph=await (await page.request.get('/api/graph')).json();
-  expect(graph.projects.some((p:{name:string})=>p.name===projectName)).toBeTruthy();
+  await expect(
+    page.getByRole("button", { name: "Dependent " + suffix, exact: true }),
+  ).toBeAttached();
+  const graph = await (await page.request.get("/api/graph")).json();
+  expect(
+    graph.projects.some((p: { name: string }) => p.name === projectName),
+  ).toBeTruthy();
   expect(graph.dependencies.length).toBeGreaterThanOrEqual(1);
 });
 
-test('tooltips, project filtering, zoom, required fields, theme and language',async({page})=>{
-  const password=process.env.ROADMAP_TEST_PASSWORD;
-  test.skip(!password,'Set ROADMAP_TEST_PASSWORD; use an isolated test database.');
-  await page.goto('/');
-  await page.getByLabel('Password',{exact:true}).fill(password!);
-  await page.getByRole('button',{name:/^Sign in/}).click();
-  await expect(page.getByTestId('milestone').first()).toBeAttached();
-  const point=page.getByTestId('milestone').first();
+test("tooltips, project filtering, zoom, required fields, theme and language", async ({
+  page,
+}) => {
+  const password = process.env.ROADMAP_TEST_PASSWORD;
+  test.skip(
+    !password,
+    "Set ROADMAP_TEST_PASSWORD; use an isolated test database.",
+  );
+  await page.goto("/");
+  await page.getByLabel("Password", { exact: true }).fill(password!);
+  await page.getByRole("button", { name: /^Sign in/ }).click();
+  await expect(page.getByTestId("milestone").first()).toBeAttached();
+  const point = page.getByTestId("milestone").first();
   await point.scrollIntoViewIfNeeded();
-  await point.hover();
-  await expect(page.getByRole('tooltip')).toBeVisible();
-  await point.click();
-  await expect(page.getByRole('complementary',{name:'Milestone details'})).toBeVisible();
-  const count=await page.getByTestId('milestone').count();
-  const projectToggle=page.locator('.project-row input[type=checkbox]').first();
+  await point.locator("circle").nth(1).hover();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  await point.locator("circle").nth(1).click();
+  await expect(
+    page.getByRole("complementary", { name: "Milestone details" }),
+  ).toBeVisible();
+  const count = await page.getByTestId("milestone").count();
+  const projectToggle = page
+    .locator(".project-row input[type=checkbox]")
+    .first();
   await projectToggle.uncheck();
-  expect(await page.getByTestId('milestone').count()).toBeLessThan(count);
+  await expect
+    .poll(() => page.getByTestId("milestone").count())
+    .toBeLessThan(count);
   await projectToggle.check();
-  await expect(page.getByTestId('milestone')).toHaveCount(count);
-  const svg=page.locator('svg.timeline');
-  await page.getByLabel('View',{exact:true}).selectOption('month');
-  const month=Number(await svg.getAttribute('width'));
-  await page.getByLabel('View',{exact:true}).selectOption('multi');
-  expect(Number(await svg.getAttribute('width'))).toBeLessThan(month);
-  await page.getByRole('button',{name:'Add project',exact:true}).click();
-  await page.getByRole('button',{name:'Save changes',exact:true}).click();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  expect(await page.getByLabel('Name',{exact:true}).evaluate((e:HTMLInputElement)=>e.validity.valueMissing)).toBeTruthy();
-  await page.getByRole('button',{name:'Cancel',exact:true}).click();
-  await page.getByRole('button',{name:'Theme',exact:true}).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme','light');
-  await page.getByRole('button',{name:'Settings',exact:true}).click();
-  await page.getByLabel('Language',{exact:true}).selectOption('ru');
-  await expect(page.getByRole('heading',{name:'Настройки',exact:true})).toBeVisible();
+  await expect(page.getByTestId("milestone")).toHaveCount(count);
+  const svg = page.locator("svg.timeline");
+  await page
+    .getByRole("combobox", { name: "View", exact: true })
+    .selectOption("month");
+  const month = Number(await svg.getAttribute("width"));
+  await page
+    .getByRole("combobox", { name: "View", exact: true })
+    .selectOption("multi");
+  expect(Number(await svg.getAttribute("width"))).toBeLessThan(month);
+  await page.getByRole("button", { name: "Add project", exact: true }).click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  expect(
+    await page
+      .getByLabel("Name", { exact: true })
+      .evaluate((e: HTMLInputElement) => e.validity.valueMissing),
+  ).toBeTruthy();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Theme", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "Language", exact: true })
+    .selectOption("ru");
+  await expect(
+    page.getByRole("heading", { name: "Настройки", exact: true }),
+  ).toBeVisible();
   await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('lang','ru');
-  await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+  await expect(page.locator("html")).toHaveAttribute("lang", "ru");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });

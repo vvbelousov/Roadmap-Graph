@@ -36,3 +36,7 @@ go test -race -cover ./...
 go vet ./...
 go test ./internal/server -run '^$' -bench . -benchmem
 ```
+
+## Optional Yandex Tracker
+
+Migration v2 adds connection metadata, stable issue baselines/conflicts, the durable outbox, dependency baselines, import previews and retry cooldowns. `StartTracker(ctx)` runs the optional poller in the existing process. Configure `ROADMAP_TRACKER_TOKEN` only in the backend environment; no token or custom API destination is accepted by integration endpoints. The connection is disabled by default. See [Tracker setup and recovery](../docs/TRACKER.md), [API routes](../docs/API.md), and [executed checks](../docs/VERIFICATION.md).
