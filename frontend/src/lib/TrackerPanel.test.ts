@@ -5,6 +5,7 @@ import {
   fireEvent,
   waitFor,
   cleanup,
+  within,
 } from "@testing-library/svelte";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import TrackerPanel from "./TrackerPanel.svelte";
@@ -231,6 +232,96 @@ describe("Tracker UI", () => {
     expect(api.mock.calls.some((call) => call[0] === "/tracker/import")).toBe(
       false,
     );
+  });
+  it("persists corrected status keys and field flags and enforces one outgoing target", async () => {
+    const data = state();
+    data.config.enabled = true;
+    data.config.fields.status = {
+      field: "status",
+      codec: "status",
+      writable: false,
+    };
+    data.config.statuses = {
+      "In Progress": "in_progress",
+      review: "in_progress",
+    };
+    data.config.write_statuses = { in_progress: "In Progress" };
+    const api = vi.fn(async (path: string, method = "GET", body?: any) => {
+      if (path === "/tracker/config") {
+        data.config = JSON.parse(JSON.stringify(body));
+        return structuredClone(data.config);
+      }
+      return structuredClone(data);
+    });
+    const first = render(TrackerPanel, {
+      props: { api, lang: "en", projects },
+    });
+    await screen.findByLabelText("Use for outgoing changes: In Progress");
+    const keys = screen.getAllByLabelText("Tracker status key");
+    await fireEvent.input(keys[0], { target: { value: "inProgress" } });
+    await fireEvent.click(
+      screen.getByLabelText("Use for outgoing changes: review"),
+    );
+    expect(
+      (
+        screen.getByLabelText(
+          "Use for outgoing changes: inProgress",
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+    await fireEvent.click(
+      screen.getByLabelText("Use for outgoing changes: inProgress"),
+    );
+    expect(
+      (
+        screen.getByLabelText(
+          "Use for outgoing changes: review",
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Field and dependency mappings" }),
+    );
+    const statusGroup = screen.getByRole("group", { name: "Status" });
+    await fireEvent.click(
+      within(statusGroup).getByRole("checkbox", {
+        name: "Allow outgoing changes",
+      }),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Save Tracker settings" }),
+    );
+    await screen.findByText("Tracker settings saved.");
+    expect(data.config.statuses).toEqual({
+      inProgress: "in_progress",
+      review: "in_progress",
+    });
+    expect(data.config.write_statuses).toEqual({ in_progress: "inProgress" });
+    expect(data.config.fields.status.writable).toBe(true);
+    first.unmount();
+    render(TrackerPanel, { props: { api, lang: "en", projects } });
+    const saved = await screen.findByLabelText(
+      "Use for outgoing changes: inProgress",
+    );
+    expect((saved as HTMLInputElement).checked).toBe(true);
+    expect(
+      (
+        screen.getByLabelText(
+          "Use for outgoing changes: review",
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Field and dependency mappings" }),
+    );
+    expect(
+      (
+        within(screen.getByRole("group", { name: "Status" })).getByRole(
+          "checkbox",
+          { name: "Allow outgoing changes" },
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
   });
   it("shows separate sync conflicts and sends explicit per-field choices", async () => {
     const data = state();

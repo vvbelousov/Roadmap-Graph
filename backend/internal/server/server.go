@@ -104,6 +104,22 @@ func (s *Server) current(r *http.Request) (session, bool) {
 	return v, ok
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") && slog.Default().Enabled(r.Context(), slog.LevelDebug) {
+		started := time.Now()
+		captured := &debugResponseWriter{ResponseWriter: w}
+		w = captured
+		defer func() {
+			route := r.Pattern
+			if route == "" {
+				route = "/api/{unmatched}"
+			}
+			status := captured.status
+			if status == 0 {
+				status = 200
+			}
+			slog.DebugContext(r.Context(), "API request completed", "method", r.Method, "route", route, "status", status, "duration_ms", time.Since(started).Milliseconds())
+		}()
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "same-origin")
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -158,6 +174,7 @@ func (s *Server) routes() {
 			fail(w, 500, "Database error")
 			return
 		}
+		slog.DebugContext(r.Context(), "graph loaded", "projects", len(g.Projects), "milestones", len(g.Milestones), "dependencies", len(g.Dependencies))
 		respond(w, 200, g)
 	})
 	s.mux.HandleFunc("GET /api/analysis/conflicts", func(w http.ResponseWriter, r *http.Request) {

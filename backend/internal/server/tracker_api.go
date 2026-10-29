@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -188,7 +189,7 @@ func (s *Server) configureTracker(w http.ResponseWriter, r *http.Request) {
 	}
 	s.db.QueryRow("SELECT count(*) FROM tracker_records WHERE local_id IS NOT NULL AND state!='unlinked'").Scan(&n)
 	if n > 0 && !sameConfigMapping(old, c) {
-		fail(w, 409, "Unlink imported milestones before changing organization or field/status/link mappings")
+		fail(w, 409, "Unlink imported milestones before changing field IDs, formats or link mappings")
 		return
 	}
 	s.db.QueryRow("SELECT count(*) FROM tracker_outbox WHERE kind='publish'").Scan(&n)
@@ -201,6 +202,7 @@ func (s *Server) configureTracker(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "Database error")
 		return
 	}
+	slog.DebugContext(r.Context(), "Tracker configuration saved", "enabled", c.Enabled, "mapped_fields", len(c.Fields), "status_mappings", len(c.Statuses), "outgoing_statuses", len(c.WriteStatuses), "status_writable", c.Fields["status"].Writable)
 	respond(w, 200, c)
 }
 func (s *Server) publishTracker(w http.ResponseWriter, r *http.Request) {

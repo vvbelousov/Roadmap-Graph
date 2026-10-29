@@ -1387,3 +1387,16 @@ dialog .form-grid > label {
   padding: 6px;
   border-radius: 5px;
 }
+
+.timeline-diagnostics {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  overflow: auto;
+}
+.timeline-diagnostics pre {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

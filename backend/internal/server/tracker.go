@@ -600,8 +600,9 @@ func (s *Server) StartTracker(ctx context.Context) {
 	}()
 }
 
-// Field identity/format and existing status meanings anchor persisted baselines.
-// Write permissions, outgoing status targets and additional status keys can change safely.
+// Field identity and format anchor persisted baselines. Status mappings can be
+// corrected after import: their new normalized values go through the usual
+// three-way merge, so disputed local status edits remain explicit conflicts.
 func sameConfigMapping(a, b TrackerConfig) bool {
 	if a.OrgID != b.OrgID || a.OrgHeader != b.OrgHeader || !reflect.DeepEqual(a.Links, b.Links) || len(a.Fields) != len(b.Fields) {
 		return false
@@ -609,11 +610,6 @@ func sameConfigMapping(a, b TrackerConfig) bool {
 	for k, f := range a.Fields {
 		other, ok := b.Fields[k]
 		if !ok || f.Field != other.Field || f.Codec != other.Codec {
-			return false
-		}
-	}
-	for k, v := range a.Statuses {
-		if b.Statuses[k] != v {
 			return false
 		}
 	}

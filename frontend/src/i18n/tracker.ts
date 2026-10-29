@@ -20,6 +20,11 @@ export const trackerEn = {
   remove: "Remove",
   addSelection: "Add selection",
   statuses: "Status mappings",
+  duplicateStatus: "Each Tracker status key can appear only once.",
+  oneOutgoingStatus:
+    "Choose only one outgoing Tracker status for each Roadmap status.",
+  statusWriteDisabled:
+    "Outgoing status destinations are saved, but the Status field is read-only. Enable Allow outgoing changes for Status in field mappings to upload status edits.",
   unmappedStatuses: "Choose mappings for the statuses found in Tracker",
   unmappedStatusHint:
     "These statuses are used by the skipped issues. Select a Roadmap status for each one. No status is chosen automatically.",
@@ -30,7 +35,7 @@ export const trackerEn = {
   completionDateHint:
     "Completed milestones also need an actual completion date. Configure its Tracker field in Field and dependency mappings.",
   statusHint:
-    "Map successful completion and cancellation separately. A closed issue is not automatically completed. Enable one outgoing status per local status.",
+    "Map successful completion and cancellation separately. A closed issue is not automatically completed. Choose one outgoing status per Roadmap status. Selecting it clears the other outgoing choices for the same Roadmap status.",
   remoteStatus: "Tracker status key",
   localStatus: "Roadmap status",
   writeStatus: "Use for outgoing changes",
@@ -133,6 +138,11 @@ export const trackerRu: typeof trackerEn = {
   remove: "Удалить",
   addSelection: "Добавить выборку",
   statuses: "Соответствия статусов",
+  duplicateStatus: "Каждый ключ статуса Трекера можно указать только один раз.",
+  oneOutgoingStatus:
+    "Для каждого статуса роадмапа выберите только один исходящий статус Трекера.",
+  statusWriteDisabled:
+    "Исходящие статусы сохранены, но поле «Статус» доступно только для чтения. Для отправки изменений включите «Разрешить отправку изменений» у поля «Статус» в соответствии полей.",
   unmappedStatuses: "Выберите соответствия найденных статусов Трекера",
   unmappedStatusHint:
     "Эти статусы используются в пропущенных задачах. Выберите для каждого статус роадмапа. Автоматически ничего не выбирается.",
@@ -143,7 +153,7 @@ export const trackerRu: typeof trackerEn = {
   completionDateHint:
     "Для завершённых вех также нужна фактическая дата завершения. Настройте её поле Трекера в соответствии полей и зависимостей.",
   statusHint:
-    "Настройте успешное завершение и отмену отдельно. Закрытая задача не считается завершённой автоматически. Для каждого локального статуса выберите один исходящий статус.",
+    "Настройте успешное завершение и отмену отдельно. Закрытая задача не считается завершённой автоматически. Для каждого статуса роадмапа выберите один исходящий статус. Новый выбор снимает остальные отметки для того же статуса роадмапа.",
   remoteStatus: "Ключ статуса Трекера",
   localStatus: "Статус дорожной карты",
   writeStatus: "Использовать для отправки",
@@ -228,6 +238,8 @@ export const trackerRu: typeof trackerEn = {
 
 // Backend diagnostics remain stable for API clients; translate them at the UI boundary.
 const messagesRu: Record<string, string> = {
+  "Unlink imported milestones before changing field IDs, formats or link mappings":
+    "Отключите связи импортированных вех перед изменением ID, форматов полей или соответствий зависимостей",
   "This database is already bound to a Tracker organization":
     "Эта база уже привязана к организации Трекера",
   "Use ISO YYYY-MM-DD calendar dates":

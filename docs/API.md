@@ -80,7 +80,7 @@ All routes require the existing session and mutation CSRF header. Credentials ar
 | Method | Endpoint | Body / result |
 |---|---|---|
 | GET | `/api/tracker` | `config`, `records`, `outbox`, `last_success`, `last_error`, `running`; no credentials |
-| PUT | `/api/tracker/config` | Full config, see `docs/tracker-config.example.json`; field identity/format and existing status meaning changes require unlinking; permissions and new status keys can be adjusted safely |
+| PUT | `/api/tracker/config` | Full config, see `docs/tracker-config.example.json`; field identity/format changes require unlinking; status keys/meanings and write permissions can be corrected after import and use normal three-way reconciliation |
 | POST | `/api/tracker/test` | Tests saved connection using current user endpoint |
 | POST | `/api/tracker/preview` | Persisted, expiring preview: `id`, `projects`, `milestones`, `links`, `skipped`, `warnings`, `unmapped_statuses`; no graph writes |
 | POST | `/api/tracker/import` | `{ "preview_id": "..." }`; atomically applies unchanged preview |

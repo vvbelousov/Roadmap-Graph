@@ -8,6 +8,7 @@ services:
       ROADMAP_COOKIE_SECURE: ${ROADMAP_COOKIE_SECURE:-false}
       ROADMAP_DEMO: ${ROADMAP_DEMO:-false}
       ROADMAP_TRACKER_TOKEN: ${ROADMAP_TRACKER_TOKEN:-}
+      ROADMAP_LOG_LEVEL: ${ROADMAP_LOG_LEVEL:-info}
       ROADMAP_ADDR: :8080
       ROADMAP_DB: /data/roadmap.db
       ROADMAP_STATIC: /app/public

@@ -18,7 +18,12 @@ func env(k, d string) string {
 	return d
 }
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	var level slog.Level
+	if e := level.UnmarshalText([]byte(env("ROADMAP_LOG_LEVEL", "info"))); e != nil {
+		slog.Error("Invalid ROADMAP_LOG_LEVEL; use debug, info, warn or error")
+		os.Exit(1)
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 	db, e := server.OpenDB(env("ROADMAP_DB", "data/roadmap.db"))
 	if e != nil {
 		slog.Error("database failed", "error", e)

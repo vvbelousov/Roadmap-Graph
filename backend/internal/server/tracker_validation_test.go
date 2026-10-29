@@ -120,3 +120,42 @@ func TestTrackerPreviewDiscoversStatusesAndReportsBothImportBlockers(t *testing.
 		t.Fatal("custom date or status not applied")
 	}
 }
+
+func TestTrackerCanCorrectStatusKeysAfterImportWithoutUnlinking(t *testing.T) {
+	c, f, cfg := trackerSetup(t)
+	cfg.Statuses["In Progress"] = "in_progress"
+	cfg.WriteStatuses["in_progress"] = "In Progress"
+	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	f.add("1", "Imported milestone")
+	importTracker(t, c)
+	m := localByExternal(t, c.s, "1")
+	delete(cfg.Statuses, "In Progress")
+	cfg.Statuses["inProgress"] = "in_progress"
+	cfg.WriteStatuses["in_progress"] = "inProgress"
+	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	loaded, e := c.s.trackerConfig()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, old := loaded.Statuses["In Progress"]; old || loaded.Statuses["inProgress"] != "in_progress" || loaded.WriteStatuses["in_progress"] != "inProgress" {
+		t.Fatal(loaded)
+	}
+	records, _ := c.s.trackerRecords()
+	if len(records) != 1 || records[0].State == "unlinked" || records[0].LocalID != m.ID {
+		t.Fatal("mapping correction unlinked the milestone")
+	}
+	// A mapping meaning change and an independent local status edit remain a conflict.
+	c.expect("PATCH", "/api/milestones/"+m.ID, `{"status":"in_progress"}`, 200)
+	cfg.Statuses["open"] = "delayed"
+	delete(cfg.WriteStatuses, "planned")
+	cfg.WriteStatuses["delayed"] = "open"
+	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	if c.s.syncTracker(context.Background(), cfg) == nil {
+		t.Fatal("status mapping conflict not reported")
+	}
+	records, _ = c.s.trackerRecords()
+	conflict := records[0].Conflicts["status"]
+	if records[0].State != "conflict" || conflict.Local != "in_progress" || conflict.Remote != "delayed" || f.patches != 0 {
+		t.Fatalf("mapping change overwrote disputed data: %+v", records)
+	}
+}

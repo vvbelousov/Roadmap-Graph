@@ -44,7 +44,7 @@ Unmapped fields belong to Roadmap and remain local. Mapped fields without write 
 
 Date-time fields such as `resolvedAt` are not accepted as date-only fields: configure a date-only completion field. Undated issues are skipped with a reason; dates are never invented. Status transitions requiring additional workflow form fields are outside this version; failures remain visible. Field formats are an explicit operator contract, not automatic schema inference. Read-only permission failures are visible and recoverable through Retry after correcting access.
 
-Field IDs/formats, existing status meanings and link mappings cannot change while linked milestones or pending publications exist. Unlink them before replacing those mappings. Write permissions, outgoing status targets and additional status keys can be adjusted without reinterpreting existing baselines. Organization identity cannot change after importing any issue. Exclusion is permanent for an external issue ID in this initial version, including after its local milestone is deleted. Switching organizations with retained tombstones is not supported; this version is for one organization per database.
+Field IDs/formats and link mappings cannot change while linked milestones or pending publications exist; unlink before replacing those mappings. Status keys, status meanings, write permissions and outgoing status targets can be corrected after import. The next synchronization compares the newly mapped remote status with the saved local baseline; competing local status edits become conflicts. Selecting an outgoing destination clears other outgoing choices for the same Roadmap status, because each Roadmap status has exactly one destination at most. Organization identity cannot change after importing any issue. Exclusion is permanent for an external issue ID in this initial version, including after its local milestone is deleted. Switching organizations with retained tombstones is not supported; this version is for one organization per database.
 
 ## Dependencies
 
@@ -80,3 +80,11 @@ Each issue commits separately; a later failure never rolls back already complete
 ## Separate organization acceptance checks
 
 Automated tests use a local HTTP emulator and never contact real Tracker issues. Before production enablement, use a separately authorized test organization to verify actual field IDs/schema, OAuth/IAM rights and rotation, queue workflow transitions and required fields, the configured dependency direction/relationship pair, unique-filter indexing after lost creation responses, permission-dependent 403/404 behavior, and real throttling/Retry-After behavior. No live organization has been modified as part of implementation.
+
+## Debugging missing milestones and unsaved settings
+
+Set `ROADMAP_LOG_LEVEL=debug` in the backend environment (or `.env` for Compose), then rebuild/recreate the container with `docker compose up -d --build`. Follow logs with `docker compose logs -f --tail=100 roadmap`. Debug logs include route templates, HTTP status, duration, Tracker attempt counts, graph counts and configuration counts. They exclude credentials, headers, query strings, payloads and issue contents. The default log level is `info`; `warn` and `error` are also supported.
+
+Open `/?debug=1` to show timeline diagnostics: loaded/filtered milestone counts, milestones inside the date window, selected projects, active filters, zoom and scroll offset. Use Reset filters and Fit to reveal milestones hidden by filters or a date window. Fit clears the date window and scroll position. The graph refreshes every 15 seconds and on window focus while authenticated, visible and outside a milestone editing dialog.
+
+Settings save results/errors are displayed next to the Save button. Saved settings are reloaded from the canonical API response. Status-key corrections no longer require unlinking imported milestones. There is only one outgoing Tracker status per local status; selecting a new one immediately clears competing choices. Outgoing destination mappings and permission to write the Status field are separate controls; the UI explains when the Status field remains read-only.

@@ -1,5 +1,15 @@
 # Verification and acceptance evidence
 
+## Update: 2026-10-29 diagnostics and settings
+
+- Passed 25 backend tests, including status-key corrections after import, three-way conflict preservation after mapping changes, and credential/payload redaction in debug logs. `go vet ./...` and production backend compilation passed.
+- Passed 20 frontend tests, including saving/reopening corrected keys and field permissions, exclusive outgoing status targets, and timeline diagnostics/Fit date-window recovery. Type checking reported zero errors/warnings; the production frontend build passed.
+- Passed all 3 Playwright scenarios against a new isolated local database with debug logging enabled. Real Tracker data was not modified.
+- Read-only inspection of the running instance found one synchronized milestone, AP-270, planned for 2026-11-06. A fresh browser rendered it without JavaScript errors. This does not reproduce the user's existing browser filters/scroll state; `?debug=1` now exposes those conditions.
+- Fixed the backend restriction that rejected status-key edits after import, moved save feedback beside the controls, and prevented silently selecting multiple outgoing destinations for one local status. Added `ROADMAP_LOG_LEVEL` and credential-safe request/sync metadata.
+- The running container was not rebuilt or replaced. The earlier verification record follows.
+
+
 Verified on 2026-10-28 against the working tree. Tests used isolated SQLite databases and local HTTP servers; no real Tracker issues or infrastructure were modified.
 
 | Check | Result |

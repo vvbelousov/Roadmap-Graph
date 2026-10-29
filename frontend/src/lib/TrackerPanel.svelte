@@ -65,14 +65,7 @@
       data = d;
       if (changed && !initial) await onchange();
       if (initial) {
-        config = structuredClone(d.config);
-        statusRows = Object.entries(config.statuses || {}).map(
-          ([remote, local]) => ({
-            remote,
-            local: String(local),
-            write: config.write_statuses?.[String(local)] === remote,
-          }),
-        );
+        applyConfig(d.config);
       }
     } catch (e) {
       error = String(e);
@@ -113,15 +106,48 @@
     await save();
     await previewImport();
   }
+  function applyConfig(next: any) {
+    if (!next) return;
+    config = JSON.parse(JSON.stringify(next));
+    statusRows = Object.entries(config.statuses || {}).map(
+      ([remote, local]) => ({
+        remote,
+        local: String(local),
+        write: config.write_statuses?.[String(local)] === remote,
+      }),
+    );
+  }
+  function setWriteStatus(index: number, enabled: boolean) {
+    const row = statusRows[index];
+    row.write = enabled;
+    if (enabled) {
+      for (let i = 0; i < statusRows.length; i++) {
+        if (i !== index && statusRows[i].local === row.local)
+          statusRows[i].write = false;
+      }
+    }
+  }
+  function setLocalStatus(index: number, value: string) {
+    statusRows[index].local = value;
+    if (statusRows[index].write) setWriteStatus(index, true);
+  }
   async function save() {
-    config.statuses = {};
-    config.write_statuses = {};
+    const next = JSON.parse(JSON.stringify(config));
+    next.statuses = {};
+    next.write_statuses = {};
     for (const row of statusRows) {
       if (!row.remote) continue;
-      config.statuses[row.remote] = row.local;
-      if (row.write) config.write_statuses[row.local] = row.remote;
+      if (Object.hasOwn(next.statuses, row.remote))
+        throw new Error(t.duplicateStatus);
+      next.statuses[row.remote] = row.local;
+      if (row.write) {
+        if (Object.hasOwn(next.write_statuses, row.local))
+          throw new Error(t.oneOutgoingStatus);
+        next.write_statuses[row.local] = row.remote;
+      }
     }
-    await api("/tracker/config", "PUT", config);
+    const saved = await api("/tracker/config", "PUT", next);
+    applyConfig(saved);
     preview = null;
     message = t.saved;
   }
@@ -166,10 +192,10 @@
 {#if !milestoneID || data?.config?.enabled || record || pending.length}
   <section class="tracker-panel" aria-label={t.heading}>
     <h2>{t.heading}</h2>
-    {#if error}<p class="error" role="alert">
+    {#if error && (milestoneID || !config)}<p class="error" role="alert">
         {trackerMessage(error, lang)}
       </p>{/if}
-    {#if message}<p role="status">{message}</p>{/if}
+    {#if message && milestoneID}<p role="status">{message}</p>{/if}
     {#if data && config}
       {#if milestoneID}
         <p>
@@ -342,10 +368,19 @@
         >
         <h3>{t.statuses}</h3>
         <p class="hint">{t.statusHint}</p>
+        {#if statusRows.some((row) => row.write) && !config.fields.status?.writable}<p
+            role="status"
+          >
+            {t.statusWriteDisabled}
+          </p>{/if}
         {#each statusRows as row, i}<div class="mapping-row">
             <label>{t.remoteStatus}<input bind:value={row.remote} /></label>
             <label
-              >{t.localStatus}<select bind:value={row.local}
+              >{t.localStatus}<select
+                value={row.local}
+                aria-label={`${t.localStatus}: ${row.remote || i + 1}`}
+                onchange={(event) =>
+                  setLocalStatus(i, event.currentTarget.value)}
                 >{#each statuses as s}<option value={s}
                     >{t.states[s as keyof typeof t.states] || s}</option
                   >{/each}</select
@@ -354,7 +389,10 @@
             <label
               ><input
                 type="checkbox"
-                bind:checked={row.write}
+                checked={row.write}
+                aria-label={`${t.writeStatus}: ${row.remote || i + 1}`}
+                onchange={(event) =>
+                  setWriteStatus(i, event.currentTarget.checked)}
               />{t.writeStatus}</label
             >
             <button onclick={() => statusRows.splice(i, 1)}>{t.remove}</button>
@@ -434,6 +472,14 @@
               })}>{t.addLink}</button
           >
         {/if}
+        {#if error}<p
+            class="error"
+            role="alert"
+            data-testid="tracker-save-error"
+          >
+            {trackerMessage(error, lang)}
+          </p>{/if}
+        {#if message}<p role="status">{message}</p>{/if}
         <div class="tracker-actions">
           <button disabled={busy} onclick={() => run(save)}>{t.save}</button>
           <button

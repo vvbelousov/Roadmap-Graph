@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -125,7 +126,13 @@ func (c *trackerClient) request(ctx context.Context, cfg TrackerConfig, method, 
 		req.Header.Set("Authorization", cfg.Auth+" "+secret)
 		req.Header.Set(cfg.OrgHeader, cfg.OrgID)
 		req.Header.Set("Content-Type", "application/json")
+		started := time.Now()
 		resp, e := c.http.Do(req)
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		slog.DebugContext(ctx, "Tracker API request completed", "method", method, "route", trackerLogRoute(u.Path), "status", status, "attempt", attempt+1, "duration_ms", time.Since(started).Milliseconds())
 		if e != nil { // Never expose transport errors: URLs and remote text may contain secrets.
 			if attempt == 3 || method != "GET" && !strings.Contains(u.Path, "_search") && !strings.Contains(u.Path, "_list") {
 				return nil, fmt.Errorf("Tracker network failure; operation will be reconciled before retry")
@@ -242,4 +249,34 @@ func retryTime(err error, fallback int64) int64 {
 		return h.RetryAt
 	}
 	return fallback
+}
+
+// Log only endpoint templates, never issue IDs, query strings or credentials.
+func trackerLogRoute(path string) string {
+	switch path {
+	case "/v3/myself", "/v3/issues", "/v3/issues/_search":
+		return path
+	}
+	if strings.HasPrefix(path, "/v3/issues/") {
+		parts := strings.Split(strings.TrimPrefix(path, "/v3/issues/"), "/")
+		if len(parts) == 1 {
+			return "/v3/issues/{issue}"
+		}
+		switch parts[1] {
+		case "links":
+			if len(parts) == 3 && parts[2] == "_list" {
+				return "/v3/issues/{issue}/links/_list"
+			}
+			if len(parts) > 2 {
+				return "/v3/issues/{issue}/links/{link}"
+			}
+			return "/v3/issues/{issue}/links"
+		case "transitions":
+			if len(parts) > 2 {
+				return "/v3/issues/{issue}/transitions/{transition}/_execute"
+			}
+			return "/v3/issues/{issue}/transitions"
+		}
+	}
+	return "/v3/{resource}"
 }

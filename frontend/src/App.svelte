@@ -14,6 +14,8 @@
     type Graph,
     type Conflict,
   } from "./lib/graph";
+  const debugView =
+    new URLSearchParams(window.location.search).get("debug") === "1";
   let lang = $state(localStorage.getItem("rg.lang") || "en"),
     theme = $state(localStorage.getItem("rg.theme") || "dark");
   let t = $derived(lang === "ru" ? ru : en);
@@ -222,6 +224,11 @@
   }
   onMount(() => {
     session();
+    const refreshIfIdle = () => {
+      if (authenticated && !modal && !document.hidden) void load();
+    };
+    const refreshTimer = setInterval(refreshIfIdle, 15000);
+    window.addEventListener("focus", refreshIfIdle);
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
@@ -229,7 +236,11 @@
       }
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      window.removeEventListener("focus", refreshIfIdle);
+      clearInterval(refreshTimer);
+    };
   });
   async function login() {
     error = "";
@@ -376,6 +387,14 @@
     } catch (e) {
       error = (e as Error).message;
     }
+  }
+  async function fit() {
+    rangeStart = "";
+    rangeEnd = "";
+    zoom = "fit";
+    await tick();
+    if (scroller) scroller.scrollLeft = 0;
+    scroll = 0;
   }
   function today() {
     if (scroller) scroller.scrollLeft = scale(new Date()) - viewWidth / 2;
@@ -628,6 +647,53 @@
             onclick={() => open("milestone")}>＋ {t.addMilestone}</button
           >
         </div>
+        {#if debugView}<details
+            class="timeline-diagnostics"
+            open
+            data-testid="timeline-diagnostics"
+          >
+            <summary>{t.diagnostics}</summary>
+            <pre>{JSON.stringify(
+                {
+                  loaded_milestones: graph.milestones.length,
+                  filtered_milestones: milestones.length,
+                  in_date_window: milestones.filter(
+                    (m) => m.planned_date >= start && m.planned_date <= end,
+                  ).length,
+                  visible_projects: visibleProjects.length,
+                  total_projects: projects.length,
+                  hidden_projects: hidden.length,
+                  status_filter: status,
+                  type_filter: kind,
+                  search_active: Boolean(query),
+                  only_conflicts: onlyConflicts,
+                  date_from: start,
+                  date_to: end,
+                  zoom,
+                  viewport_width: viewWidth,
+                  timeline_width: width,
+                  scroll_left: scroll,
+                },
+                null,
+                2,
+              )}</pre>
+            <button
+              onclick={async () => {
+                reset();
+                await fit();
+              }}>{t.reset}</button
+            >
+          </details>{/if}
+        {#if milestones.length > 0 && !milestones.some((m) => m.planned_date >= start && m.planned_date <= end)}<p
+            role="status"
+          >
+            {t.outsideWindow} <button onclick={fit}>{t.fit}</button>
+          </p>{/if}
+        {#if graph.milestones.length > 0 && milestones.length === 0}<p
+            role="status"
+          >
+            {t.noResults} <button onclick={reset}>{t.reset}</button>
+          </p>{/if}
         <div class="stats">
           <div>
             <span class="stat-icon blue">▱</span><span class="stat-number"
@@ -668,9 +734,8 @@
                   >{/if}
               </h2>
               <div class="graph-tools">
-                <button
-                  class:active={zoom === "fit"}
-                  onclick={() => (zoom = "fit")}>{t.fit}</button
+                <button class:active={zoom === "fit"} onclick={fit}
+                  >{t.fit}</button
                 ><button onclick={today}>{t.today}</button><span
                   class="tool-divider"
                 ></span><button

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net/url"
 	"time"
@@ -245,6 +246,11 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 	return s.saveTrackerState(m, x, stillPending)
 }
 func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
+	started := time.Now()
+	slog.DebugContext(ctx, "Tracker synchronization started", "selections", len(c.Selections))
+	defer func() {
+		slog.DebugContext(ctx, "Tracker synchronization finished", "success", err == nil, "http_status", httpCode(err), "duration_ms", time.Since(started).Milliseconds())
+	}()
 	if !c.Enabled {
 		return fmt.Errorf("Tracker integration disabled")
 	}
