@@ -45,6 +45,17 @@ const projects = [
   },
 ];
 describe("Tracker UI", () => {
+  it("explains an issue key used as a queue in Russian", async () => {
+    const data = state();
+    data.last_error =
+      "Queue selection contains issue key AP-270; use queue AP or search query Key: AP-270";
+    const api = vi.fn(async (..._args: any[]) => structuredClone(data));
+    render(TrackerPanel, { props: { api, lang: "ru", projects } });
+    await screen.findByText(
+      "AP-270 — ключ задачи. Укажите очередь AP или поисковый запрос Key: AP-270",
+    );
+  });
+
   it("configures a connection, previews and confirms import without browser credentials", async () => {
     const data = state();
     const change = vi.fn();
@@ -130,6 +141,96 @@ describe("Tracker UI", () => {
     );
     expect(change).toHaveBeenCalled();
     expect(screen.queryByLabelText(/token/i)).toBeNull();
+  });
+  it("maps discovered Tracker statuses explicitly and reruns preview", async () => {
+    const data = state();
+    data.config.enabled = true;
+    data.config.fields.planned_date.field = "duedatecustomer";
+    let previews = 0;
+    const api = vi.fn(async (path: string, method = "GET", body?: any) => {
+      if (path === "/tracker/config") {
+        data.config = JSON.parse(JSON.stringify(body));
+        return data.config;
+      }
+      if (path === "/tracker/preview") {
+        previews++;
+        return previews === 1
+          ? {
+              id: "blocked",
+              projects: [],
+              milestones: [],
+              links: [],
+              warnings: [],
+              unmapped_statuses: [
+                { key: "inProgress", name: "В работе", count: 2 },
+              ],
+              skipped: [
+                {
+                  issue_key: "AP-270",
+                  reason:
+                    "unmapped Tracker status: inProgress; Missing planned date: Tracker field duedatecustomer is empty",
+                  reasons: [
+                    "unmapped Tracker status: inProgress",
+                    "Missing planned date: Tracker field duedatecustomer is empty",
+                  ],
+                },
+              ],
+            }
+          : {
+              id: "fixed",
+              projects: [],
+              milestones: [
+                {
+                  issue_key: "AP-270",
+                  milestone: { title: "Epic", planned_date: "2027-04-12" },
+                },
+              ],
+              links: [],
+              warnings: [],
+              skipped: [],
+              unmapped_statuses: [],
+            };
+      }
+      return structuredClone(data);
+    });
+    render(TrackerPanel, { props: { api, lang: "ru", projects } });
+    const preview = await screen.findByRole("button", {
+      name: "Предпросмотр импорта",
+    });
+    await fireEvent.click(preview);
+    const select = await screen.findByRole("combobox", {
+      name: "Статус дорожной карты: В работе (inProgress)",
+    });
+    await screen.findByText(
+      "Нет плановой даты: поле Трекера duedatecustomer пустое. Заполните его или выберите другое поле даты.",
+    );
+    const save = screen.getByRole("button", {
+      name: "Сохранить статусы и повторить предпросмотр",
+    });
+    expect(save.hasAttribute("disabled")).toBe(true);
+    expect(
+      screen
+        .getByRole("button", { name: "Подтвердить импорт" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    await fireEvent.change(select, { target: { value: "in_progress" } });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+    await fireEvent.click(save);
+    await screen.findByText("AP-270: Epic — 2027-04-12");
+    expect(api).toHaveBeenCalledWith(
+      "/tracker/config",
+      "PUT",
+      expect.objectContaining({
+        statuses: { inProgress: "in_progress" },
+        write_statuses: {},
+        fields: expect.objectContaining({
+          planned_date: expect.objectContaining({ field: "duedatecustomer" }),
+        }),
+      }),
+    );
+    expect(api.mock.calls.some((call) => call[0] === "/tracker/import")).toBe(
+      false,
+    );
   });
   it("shows separate sync conflicts and sends explicit per-field choices", async () => {
     const data = state();

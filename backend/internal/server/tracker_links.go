@@ -66,7 +66,7 @@ func (s *Server) remoteEdges(ctx context.Context, c TrackerConfig, locals map[st
 					}
 					other, ok := locals[l.Object.ID]
 					if !ok {
-						warnings = append(warnings, TrackerNotice{id, "linked issue outside selection: " + l.Object.Key})
+						warnings = append(warnings, TrackerNotice{Key: id, Reason: "linked issue outside selection: " + l.Object.Key})
 						continue
 					}
 					if l.Direction != "inward" && l.Direction != "outward" {

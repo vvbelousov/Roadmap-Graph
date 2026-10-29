@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,9 +33,49 @@ func newTrackerClient() *trackerClient {
 type trackerHTTPError struct {
 	Code    int
 	RetryAt int64
+	Method  string
+	Path    string
+	Fields  []string
 }
 
-func (e trackerHTTPError) Error() string { return fmt.Sprintf("Tracker HTTP %d", e.Code) }
+func (e trackerHTTPError) Error() string {
+	msg := fmt.Sprintf("Tracker HTTP %d", e.Code)
+	if e.Method != "" && e.Path != "" {
+		msg += " (" + e.Method + " " + e.Path
+		if len(e.Fields) > 0 {
+			msg += "; " + strings.Join(e.Fields, ", ")
+		}
+		msg += ")"
+	}
+	return msg
+}
+
+var trackerErrorFieldRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,127}$`)
+
+// Only validation field IDs are retained. Remote messages, headers, query strings
+// and payloads can echo credentials or issue contents and must never be exposed.
+func newTrackerHTTPError(resp *http.Response, method, path string, data []byte, secret string) trackerHTTPError {
+	e := trackerHTTPError{Code: resp.StatusCode, RetryAt: retryAt(resp.Header), Method: method, Path: strings.ReplaceAll(path, secret, "[redacted]")}
+	var payload struct {
+		Errors map[string]json.RawMessage `json:"errors"`
+	}
+	if json.Unmarshal(data, &payload) == nil {
+		for field := range payload.Errors {
+			lower := strings.ToLower(field)
+			if strings.Contains(lower, "token") || strings.Contains(lower, "authorization") || strings.Contains(lower, "secret") || strings.Contains(lower, "password") || strings.Contains(field, secret) {
+				continue
+			}
+			if trackerErrorFieldRE.MatchString(field) {
+				e.Fields = append(e.Fields, field)
+			}
+		}
+		sort.Strings(e.Fields)
+		if len(e.Fields) > 8 {
+			e.Fields = e.Fields[:8]
+		}
+	}
+	return e
+}
 func httpCode(e error) int {
 	if h, ok := e.(trackerHTTPError); ok {
 		return h.Code
@@ -107,11 +149,11 @@ func (c *trackerClient) request(ctx context.Context, cfg TrackerConfig, method, 
 			return resp.Header, nil
 		}
 		if resp.StatusCode != 429 && resp.StatusCode < 500 || attempt == 3 {
-			return resp.Header, trackerHTTPError{Code: resp.StatusCode, RetryAt: retryAt(resp.Header)}
+			return resp.Header, newTrackerHTTPError(resp, method, u.EscapedPath(), data, secret)
 		}
 		// Mutations are reconciled by the durable worker rather than blindly retried.
 		if method != "GET" && !strings.Contains(u.Path, "_search") && !strings.Contains(u.Path, "_list") {
-			return resp.Header, trackerHTTPError{Code: resp.StatusCode, RetryAt: retryAt(resp.Header)}
+			return resp.Header, newTrackerHTTPError(resp, method, u.EscapedPath(), data, secret)
 		}
 		delay := time.Duration(1<<attempt)*time.Second + time.Duration(rand.IntN(250))*time.Millisecond
 		if v := resp.Header.Get("Retry-After"); v != "" {
@@ -122,7 +164,7 @@ func (c *trackerClient) request(ctx context.Context, cfg TrackerConfig, method, 
 			}
 		}
 		if delay > 5*time.Minute {
-			return resp.Header, trackerHTTPError{Code: resp.StatusCode, RetryAt: retryAt(resp.Header)}
+			return resp.Header, newTrackerHTTPError(resp, method, u.EscapedPath(), data, secret)
 		}
 		if delay < 0 {
 			delay = 0

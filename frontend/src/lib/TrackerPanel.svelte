@@ -19,6 +19,7 @@
   let data = $state<any>(null),
     config = $state<any>(null),
     preview = $state<any>(null),
+    previewStatusChoices = $state<Record<string, string>>({}),
     busy = $state(false),
     message = $state(""),
     error = $state(""),
@@ -94,6 +95,23 @@
     } finally {
       busy = false;
     }
+  }
+  async function previewImport() {
+    preview = await api("/tracker/preview", "POST", {});
+    previewStatusChoices = Object.fromEntries(
+      (preview.unmapped_statuses || []).map((status: any) => [status.key, ""]),
+    );
+  }
+  async function savePreviewStatuses() {
+    for (const status of preview?.unmapped_statuses || []) {
+      const local = previewStatusChoices[status.key];
+      if (!statuses.includes(local)) throw new Error(t.chooseStatus);
+      const row = statusRows.find((row) => row.remote === status.key);
+      if (row) row.local = local;
+      else statusRows.push({ remote: status.key, local, write: false });
+    }
+    await save();
+    await previewImport();
   }
   async function save() {
     config.statuses = {};
@@ -286,6 +304,7 @@
           /></label
         >
         <h3>{t.selections}</h3>
+        <p class="hint">{t.queueHint}</p>
         {#each config.selections as s, i}
           <fieldset>
             <legend>{t.selection} {i + 1}</legend>
@@ -427,10 +446,7 @@
           >
           <button
             disabled={busy || !data.config.enabled}
-            onclick={() =>
-              run(async () => {
-                preview = await api("/tracker/preview", "POST", {});
-              })}>{t.preview}</button
+            onclick={() => run(previewImport)}>{t.preview}</button
           >
         </div>
         {#if preview}<section aria-label={t.preview}>
@@ -440,30 +456,79 @@
               {t.projects}: {preview.projects.length} · {t.milestones}: {preview
                 .milestones.length} · {t.links}: {preview.links.length}
             </p>
+            {#if preview.milestones.length === 0 && preview.skipped.length > 0}<p
+                role="status"
+              >
+                {t.importBlocked}
+              </p>{/if}
+            {#if preview.unmapped_statuses?.length}
+              <section aria-label={t.unmappedStatuses}>
+                <h4>{t.unmappedStatuses}</h4>
+                <p>{t.unmappedStatusHint}</p>
+                {#each preview.unmapped_statuses as status}
+                  <label
+                    >{status.name} ({status.key}) · {status.count}
+                    <select
+                      aria-label={`${t.localStatus}: ${status.name} (${status.key})`}
+                      value={previewStatusChoices[status.key] || ""}
+                      onchange={(event) => {
+                        previewStatusChoices = {
+                          ...previewStatusChoices,
+                          [status.key]: event.currentTarget.value,
+                        };
+                      }}
+                    >
+                      <option value="">{t.chooseStatus}</option>
+                      {#each statuses as local}<option value={local}
+                          >{t.states[local as keyof typeof t.states]}</option
+                        >{/each}
+                    </select>
+                  </label>
+                {/each}
+                {#if Object.values(previewStatusChoices).includes("completed") && !config.fields.completed_date}<p
+                  >
+                    {t.completionDateHint}
+                  </p>{/if}
+                <button
+                  disabled={busy ||
+                    preview.unmapped_statuses.some(
+                      (status: any) =>
+                        !statuses.includes(previewStatusChoices[status.key]),
+                    )}
+                  onclick={() => run(savePreviewStatuses)}
+                  >{t.saveStatusesAndPreview}</button
+                >
+              </section>
+            {/if}
             {#each preview.projects as p}<p>{p.name}</p>{/each}
-            <ul>
-              {#each preview.milestones as item}<li>
-                  {item.issue_key}: {item.milestone.title} — {item.milestone
-                    .planned_date}
-                </li>{/each}
-            </ul>
-            <ul>
-              {#each preview.links as link}<li>
-                  {preview.milestones.find(
-                    (m: any) =>
-                      m.milestone.id === link.prerequisite_milestone_id,
-                  )?.issue_key || link.prerequisite_milestone_id} → {preview.milestones.find(
-                    (m: any) => m.milestone.id === link.dependent_milestone_id,
-                  )?.issue_key || link.dependent_milestone_id} ({link.dependency_type ===
-                  "requires"
-                    ? t.requires
-                    : t.related})
-                </li>{/each}
-            </ul>
+            {#if preview.milestones.length}<ul>
+                {#each preview.milestones as item}<li>
+                    {item.issue_key}: {item.milestone.title} — {item.milestone
+                      .planned_date}
+                  </li>{/each}
+              </ul>{/if}
+            {#if preview.links.length}<ul>
+                {#each preview.links as link}<li>
+                    {preview.milestones.find(
+                      (m: any) =>
+                        m.milestone.id === link.prerequisite_milestone_id,
+                    )?.issue_key || link.prerequisite_milestone_id} → {preview.milestones.find(
+                      (m: any) =>
+                        m.milestone.id === link.dependent_milestone_id,
+                    )?.issue_key || link.dependent_milestone_id} ({link.dependency_type ===
+                    "requires"
+                      ? t.requires
+                      : t.related})
+                  </li>{/each}
+              </ul>{/if}
             <h4>{t.skipped}</h4>
             <ul>
               {#each preview.skipped as notice}<li>
-                  {notice.issue_key}: {trackerMessage(notice.reason, lang)}
+                  <strong>{notice.issue_key}</strong>
+                  {#each notice.reasons?.length ? notice.reasons : [notice.reason] as reason}<div
+                    >
+                      {trackerMessage(reason, lang)}
+                    </div>{/each}
                 </li>{/each}
             </ul>
             <h4>{t.warnings}</h4>
@@ -473,7 +538,11 @@
                 </li>{/each}
             </ul>
             <button
-              disabled={busy}
+              disabled={busy ||
+                preview.milestones.length +
+                  preview.projects.length +
+                  preview.links.length ===
+                  0}
               onclick={() =>
                 run(async () => {
                   await action("/tracker/import", { preview_id: preview.id });

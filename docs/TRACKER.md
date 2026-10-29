@@ -12,6 +12,20 @@ The integration is optional and disabled by default. It uses one organization an
 6. Enable the integration, **Preview import**, inspect skipped issues, milestone dates and dependencies, then **Confirm import**. Preview makes no remote mutations. Confirmation persists the snapshot in a local transaction. A changed graph/configuration or expired preview requires previewing again. New Tracker issues discovered later require a new confirmed import.
 7. **Synchronize** schedules a background run; status refreshes every five seconds while the integration panel is open. The regular poller starts with the server. Milestone details contain the Tracker link, state, mapping limitations, conflict choices and explicit **Publish to Tracker** / **Unlink** actions.
 
+## Troubleshooting HTTP 422
+
+Tracker returns 422 when request data fails validation. Diagnostics include the HTTP method, API path and validation field IDs when available. Response messages, request bodies, authentication headers and query strings are never included.
+
+A queue key is `AP`, while `AP-270` identifies one issue. Do not put an issue key in **Queue key**. For one issue, clear the queue input and set **Search query** to `Key: AP-270`; for a whole queue, use `AP`. Save settings, configure explicit status mappings, then preview and confirm import. Synchronize reconciles already linked milestones; it does not replace the initial import. Incorrect previously saved selections are rejected locally with a correction hint before any Tracker request is sent.
+
+See the official [queue key definition](https://www.yandex.ru/support/tracker/ru/manager/edit-queue-general) and [issue-key search syntax](https://yandex.ru/support/tracker/en/user/query-filter).
+
+## Resolve statuses in import preview
+
+Preview lists unknown Tracker statuses by their actual display names and keys, with the number of affected issues. Select a Roadmap status for every listed status and click **Save status mappings and preview again**. Choices are initially empty, and new mappings do not enable outgoing status transitions automatically. The selected planned-date field (including custom fields such as `duedatecustomer`) is preserved when saving status mappings.
+
+Skipped issues can show multiple blocking reasons together, such as an unmapped status and an empty planned-date field. Changing the planned-date mapping does not map statuses. Completed milestones additionally require an actual completion date. Confirmation is disabled when the preview contains nothing to import. No task type, including Epic, is automatically treated as completed.
+
 ## Mapping and ownership
 
 Mapped, writable fields have shared ownership and use three-way reconciliation. A field changed on one side propagates; identical changes converge; independent field changes merge. Different values for the same field create a synchronization conflict with baseline, Roadmap and Tracker values. Disputed fields are never silently overwritten. Choose a value for every conflict in milestone details, then synchronize. A further remote change before the upload produces a new conflict. While any field conflict remains, that issue's outgoing changes and dependency synchronization are paused.

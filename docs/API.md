@@ -82,7 +82,7 @@ All routes require the existing session and mutation CSRF header. Credentials ar
 | GET | `/api/tracker` | `config`, `records`, `outbox`, `last_success`, `last_error`, `running`; no credentials |
 | PUT | `/api/tracker/config` | Full config, see `docs/tracker-config.example.json`; field identity/format and existing status meaning changes require unlinking; permissions and new status keys can be adjusted safely |
 | POST | `/api/tracker/test` | Tests saved connection using current user endpoint |
-| POST | `/api/tracker/preview` | Persisted, expiring preview: `id`, `projects`, `milestones`, `links`, `skipped`, `warnings`; no graph writes |
+| POST | `/api/tracker/preview` | Persisted, expiring preview: `id`, `projects`, `milestones`, `links`, `skipped`, `warnings`, `unmapped_statuses`; no graph writes |
 | POST | `/api/tracker/import` | `{ "preview_id": "..." }`; atomically applies unchanged preview |
 | POST | `/api/tracker/sync` | Returns 202 after scheduling; poll GET for results |
 | POST | `/api/tracker/retry` | Resets outbox attempt limits/backoff; then synchronize |
@@ -93,3 +93,5 @@ All routes require the existing session and mutation CSRF header. Credentials ar
 Preview returns 409 on confirmation when local state/config has changed or the snapshot expired; request a fresh preview. Invalid mappings or unsupported values return 422. Connection failures expose sanitized messages and HTTP status codes, not remote response bodies. Link types are explicit; the configured `direction` marks the queried issue as prerequisite. Local mapped read-only field edits are rejected; unmapped field edits stay local. Deleting local milestones/projects excludes their Tracker records without deleting remote issues.
 
 The optional API `new_project` selection object accepts the normal Project fields (ID/timestamps generated internally); omit `project_id` when using it. The UI uses existing projects, which can be created through the normal project form. See [Tracker guide](TRACKER.md) for scope and concurrency semantics.
+
+Preview `unmapped_statuses` contains `{key,name,count}` for each unknown status in new selected issues. Skipped notices retain `reason` and may also contain a `reasons` array of simultaneous blockers. The frontend can submit explicit mappings using the existing config endpoint and request a new preview; no mapping is inferred automatically.

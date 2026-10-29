@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -66,16 +68,23 @@ type TrackerPreviewItem struct {
 	Fields     map[string]string `json:"fields"`
 }
 type TrackerNotice struct {
-	Key    string `json:"issue_key"`
-	Reason string `json:"reason"`
+	Key     string   `json:"issue_key"`
+	Reason  string   `json:"reason"`
+	Reasons []string `json:"reasons,omitempty"`
+}
+type TrackerUnmappedStatus struct {
+	Key   string `json:"key"`
+	Name  string `json:"name"`
+	Count int    `json:"count"`
 }
 type TrackerPreview struct {
-	ID       string               `json:"id"`
-	Projects []Project            `json:"projects"`
-	Items    []TrackerPreviewItem `json:"milestones"`
-	Links    []Dependency         `json:"links"`
-	Skipped  []TrackerNotice      `json:"skipped"`
-	Warnings []TrackerNotice      `json:"warnings"`
+	UnmappedStatuses []TrackerUnmappedStatus `json:"unmapped_statuses"`
+	ID               string                  `json:"id"`
+	Projects         []Project               `json:"projects"`
+	Items            []TrackerPreviewItem    `json:"milestones"`
+	Links            []Dependency            `json:"links"`
+	Skipped          []TrackerNotice         `json:"skipped"`
+	Warnings         []TrackerNotice         `json:"warnings"`
 }
 
 func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -95,6 +104,18 @@ func (s *Server) trackerConfig() (TrackerConfig, error) {
 	c = TrackerConfig{}
 	e = json.Unmarshal([]byte(raw), &c)
 	return c, e
+}
+
+var trackerIssueKeyRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*)-[0-9]+$`)
+
+func validateTrackerSelection(sel TrackerSelection) error {
+	if (sel.Queue == "") == (sel.Query == "") {
+		return fmt.Errorf("choose queue or query for each selection")
+	}
+	if parts := trackerIssueKeyRE.FindStringSubmatch(sel.Queue); parts != nil {
+		return fmt.Errorf("Queue selection contains issue key %s; use queue %s or search query Key: %s", sel.Queue, parts[1], sel.Queue)
+	}
+	return nil
 }
 
 var mappedFields = []string{"title", "description", "planned_date", "completed_date", "status", "owner", "version"}
@@ -139,8 +160,8 @@ func validateTracker(c TrackerConfig) error {
 		}
 	}
 	for _, sel := range c.Selections {
-		if (sel.Queue == "") == (sel.Query == "") {
-			return fmt.Errorf("choose queue or query for each selection")
+		if e := validateTrackerSelection(sel); e != nil {
+			return e
 		}
 		if sel.ProjectID == "" && sel.Project == nil {
 			return fmt.Errorf("selection requires a project")
@@ -252,13 +273,22 @@ func remoteFields(issue map[string]any, c TrackerConfig) (map[string]string, err
 			var ok bool
 			s, ok = c.Statuses[s]
 			if !ok {
-				return nil, fmt.Errorf("unmapped Tracker status")
+				return nil, fmt.Errorf("unmapped Tracker status: %s", trackerStatusKey(issue[f.Field]))
 			}
 		}
 		out[k] = s
 	}
 	return out, nil
 }
+func trackerStatusKey(v any) string {
+	if status, ok := v.(map[string]any); ok {
+		key, _ := status["key"].(string)
+		return key
+	}
+	key, _ := v.(string)
+	return key
+}
+
 func remoteValue(v string, f TrackerField) any {
 	if f.Codec == "single_id" && v == "" {
 		return []any{}
@@ -358,7 +388,12 @@ func parseEdge(k string) Dependency {
 	return Dependency{PrerequisiteID: p[0], DependentID: p[1], Type: p[2]}
 }
 func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPreview, error) {
-	p := TrackerPreview{ID: token(), Projects: []Project{}, Items: []TrackerPreviewItem{}, Links: []Dependency{}, Skipped: []TrackerNotice{}, Warnings: []TrackerNotice{}}
+	for _, sel := range c.Selections {
+		if e := validateTrackerSelection(sel); e != nil {
+			return TrackerPreview{}, e
+		}
+	}
+	p := TrackerPreview{ID: token(), Projects: []Project{}, Items: []TrackerPreviewItem{}, Links: []Dependency{}, Skipped: []TrackerNotice{}, Warnings: []TrackerNotice{}, UnmappedStatuses: []TrackerUnmappedStatus{}}
 	g, e := s.graph()
 	if e != nil {
 		return p, e
@@ -374,6 +409,7 @@ func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPrevi
 	issues := map[string]map[string]any{}
 	locals := map[string]string{}
 	seen := map[string]string{}
+	unmapped := map[string]*TrackerUnmappedStatus{}
 	for _, sel := range c.Selections {
 		pid := sel.ProjectID
 		if sel.Project != nil {
@@ -428,15 +464,40 @@ func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPrevi
 				}
 				continue
 			}
+			if mapping, ok := c.Fields["status"]; ok {
+				statusKey := trackerStatusKey(v[mapping.Field])
+				if _, mapped := c.Statuses[statusKey]; !mapped && statusKey != "" {
+					item := unmapped[statusKey]
+					if item == nil {
+						name := statusKey
+						if raw, ok := v[mapping.Field].(map[string]any); ok {
+							if display, ok := raw["display"].(string); ok && display != "" {
+								name = display
+							}
+						}
+						item = &TrackerUnmappedStatus{Key: statusKey, Name: name}
+						unmapped[statusKey] = item
+					}
+					item.Count++
+				}
+			}
 			f, e := remoteFields(v, c)
+			reasons := []string{}
 			if e != nil {
-				p.Skipped = append(p.Skipped, TrackerNotice{key, e.Error()})
+				reasons = append(reasons, e.Error())
+			}
+			planned := c.Fields["planned_date"].Field
+			if v[planned] == nil || v[planned] == "" {
+				reasons = append(reasons, fmt.Sprintf("Missing planned date: Tracker field %s is empty", planned))
+			}
+			if len(reasons) > 0 {
+				p.Skipped = append(p.Skipped, TrackerNotice{Key: key, Reason: strings.Join(reasons, "; "), Reasons: reasons})
 				continue
 			}
 			m := Milestone{ID: token(), ProjectID: pid, Type: "release", Status: "planned", ExternalURL: trackerURL(key), CreatedAt: now(), UpdatedAt: now()}
 			setFields(&m, f)
 			if e = validateMilestone(m); e != nil {
-				p.Skipped = append(p.Skipped, TrackerNotice{key, e.Error()})
+				p.Skipped = append(p.Skipped, TrackerNotice{Key: key, Reason: e.Error()})
 				continue
 			}
 			locals[id] = m.ID
@@ -444,6 +505,10 @@ func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPrevi
 			p.Items = append(p.Items, TrackerPreviewItem{id, key, ver, m, f})
 		}
 	}
+	for _, status := range unmapped {
+		p.UnmappedStatuses = append(p.UnmappedStatuses, *status)
+	}
+	sort.Slice(p.UnmappedStatuses, func(i, j int) bool { return p.UnmappedStatuses[i].Key < p.UnmappedStatuses[j].Key })
 	edges, warnings, e := s.fetchEdges(ctx, c, locals)
 	if e != nil {
 		return p, e

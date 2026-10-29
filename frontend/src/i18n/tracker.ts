@@ -12,12 +12,23 @@ export const trackerEn = {
   selections: "Issue selections",
   selection: "Selection",
   queue: "Queue key",
+  queueHint:
+    "Enter a queue such as AP. For one issue, leave the queue empty and use the search query Key: AP-270.",
   query: "Search query",
   project: "Roadmap project",
   choose: "Choose a project",
   remove: "Remove",
   addSelection: "Add selection",
   statuses: "Status mappings",
+  unmappedStatuses: "Choose mappings for the statuses found in Tracker",
+  unmappedStatusHint:
+    "These statuses are used by the skipped issues. Select a Roadmap status for each one. No status is chosen automatically.",
+  chooseStatus: "Choose a Roadmap status",
+  saveStatusesAndPreview: "Save status mappings and preview again",
+  importBlocked:
+    "No milestones are ready to import. Resolve the reasons below, then preview again.",
+  completionDateHint:
+    "Completed milestones also need an actual completion date. Configure its Tracker field in Field and dependency mappings.",
   statusHint:
     "Map successful completion and cancellation separately. A closed issue is not automatically completed. Enable one outgoing status per local status.",
   remoteStatus: "Tracker status key",
@@ -114,12 +125,23 @@ export const trackerRu: typeof trackerEn = {
   selections: "Выборки задач",
   selection: "Выборка",
   queue: "Ключ очереди",
+  queueHint:
+    "Укажите очередь, например AP. Для одной задачи оставьте очередь пустой и задайте поисковый запрос Key: AP-270.",
   query: "Поисковый запрос",
   project: "Проект дорожной карты",
   choose: "Выберите проект",
   remove: "Удалить",
   addSelection: "Добавить выборку",
   statuses: "Соответствия статусов",
+  unmappedStatuses: "Выберите соответствия найденных статусов Трекера",
+  unmappedStatusHint:
+    "Эти статусы используются в пропущенных задачах. Выберите для каждого статус роадмапа. Автоматически ничего не выбирается.",
+  chooseStatus: "Выберите статус роадмапа",
+  saveStatusesAndPreview: "Сохранить статусы и повторить предпросмотр",
+  importBlocked:
+    "Нет вех, готовых к импорту. Устраните причины ниже и повторите предпросмотр.",
+  completionDateHint:
+    "Для завершённых вех также нужна фактическая дата завершения. Настройте её поле Трекера в соответствии полей и зависимостей.",
   statusHint:
     "Настройте успешное завершение и отмену отдельно. Закрытая задача не считается завершённой автоматически. Для каждого локального статуса выберите один исходящий статус.",
   remoteStatus: "Ключ статуса Трекера",
@@ -206,7 +228,8 @@ export const trackerRu: typeof trackerEn = {
 
 // Backend diagnostics remain stable for API clients; translate them at the UI boundary.
 const messagesRu: Record<string, string> = {
- "This database is already bound to a Tracker organization":"Эта база уже привязана к организации Трекера",
+  "This database is already bound to a Tracker organization":
+    "Эта база уже привязана к организации Трекера",
   "Use ISO YYYY-MM-DD calendar dates":
     "Укажите календарную дату в формате YYYY-MM-DD",
   "Title and project are required": "Нужны название и проект",
@@ -305,6 +328,19 @@ export function trackerMessage(message: string, lang: string): string {
   if (lang !== "ru") return message;
   const raw = message.replace(/^Error: /, "");
   if (messagesRu[raw]) return messagesRu[raw];
+  const unmapped = raw.match(/^unmapped Tracker status: (.*)$/);
+  if (unmapped)
+    return `Не настроено соответствие статуса Трекера: ${unmapped[1]}`;
+  const missingDate = raw.match(
+    /^Missing planned date: Tracker field (.*) is empty$/,
+  );
+  if (missingDate)
+    return `Нет плановой даты: поле Трекера ${missingDate[1]} пустое. Заполните его или выберите другое поле даты.`;
+  const issueKey = raw.match(
+    /^Queue selection contains issue key (\S+); use queue (\S+) or search query Key: (\S+)$/,
+  );
+  if (issueKey)
+    return `${issueKey[1]} — ключ задачи. Укажите очередь ${issueKey[2]} или поисковый запрос Key: ${issueKey[3]}`;
   const prefixes: Record<string, string> = {
     "Tracker HTTP ": "Трекер HTTP ",
     "hard dependency cycle: ": "Цикл обязательных зависимостей: ",

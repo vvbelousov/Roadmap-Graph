@@ -285,6 +285,11 @@ func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
 			err = e
 		}
 	}()
+	for _, sel := range c.Selections {
+		if e = validateTrackerSelection(sel); e != nil {
+			return e
+		}
+	}
 	if e = s.publishPending(ctx, c); e != nil {
 		return e
 	}
