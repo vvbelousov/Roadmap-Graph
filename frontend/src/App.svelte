@@ -2,6 +2,8 @@
   import { onMount, tick } from "svelte";
   import { en, ru } from "./i18n";
   import TrackerPanel from "./lib/TrackerPanel.svelte";
+  import TrackerConnection from "./lib/TrackerConnection.svelte";
+  import { trackerEn, trackerRu } from "./i18n/tracker";
   import {
     chain,
     edgePath,
@@ -19,6 +21,15 @@
   let lang = $state(localStorage.getItem("rg.lang") || "en"),
     theme = $state(localStorage.getItem("rg.theme") || "dark");
   let t = $derived(lang === "ru" ? ru : en);
+  let trackerT = $derived(lang === "ru" ? trackerRu : trackerEn);
+  let projectSettingsID = $state(""),
+    integrationDirty = $state(false);
+  function navigate(next: string, id = "") {
+    if (integrationDirty && !confirm(trackerT.discard)) return;
+    integrationDirty = false;
+    projectSettingsID = id;
+    page = next;
+  }
   const tr = (key: string) => (t as Record<string, string>)[key] || key;
   let graph = $state<Graph>({ projects: [], milestones: [], dependencies: [] }),
     conflicts = $state<Conflict[]>([]),
@@ -255,6 +266,8 @@
     }
   }
   async function logout() {
+    if (integrationDirty && !confirm(trackerT.discard)) return;
+    integrationDirty = false;
     try {
       await api("/auth/logout", "POST");
       authenticated = false;
@@ -462,16 +475,16 @@
       href="/"
       onclick={(e) => {
         e.preventDefault();
-        page = "overview";
+        navigate("overview");
       }}><span class="logo">⌘</span> Roadmap Graph</a
     >
     <nav>
       <button
         class:active={page === "overview"}
-        onclick={() => (page = "overview")}>▧ <span>{t.overview}</span></button
+        onclick={() => navigate("overview")}>▧ <span>{t.overview}</span></button
       ><button
         class:active={page === "projects"}
-        onclick={() => (page = "projects")}>▱ <span>{t.projects}</span></button
+        onclick={() => navigate("projects")}>▱ <span>{t.projects}</span></button
       >
     </nav>
     <div class="top-search">
@@ -479,7 +492,7 @@
         aria-label={t.search}
         placeholder={t.search}
         bind:value={query}
-        oninput={() => (page = "overview")}
+        oninput={() => navigate("overview")}
       /><kbd>⌘ K</kbd>
     </div>
     <button
@@ -495,7 +508,7 @@
     ><button
       aria-label={t.settings}
       class:active={page === "settings"}
-      onclick={() => (page = "settings")}>⚙</button
+      onclick={() => navigate("settings")}>⚙</button
     >
     <div class="avatar">RG</div>
   </header>
@@ -518,8 +531,8 @@
             ><button
               class="small"
               title={t.editProject}
-              aria-label={`${t.editProject} ${p.name}`}
-              onclick={() => open("project", p.id)}>···</button
+              aria-label={`${trackerT.projectSettings} ${p.name}`}
+              onclick={() => navigate("project_settings", p.id)}>···</button
             >
           </div>{/each}{#if !projects.length}<p class="muted">
             {t.emptyProjects}
@@ -591,8 +604,38 @@
               ></select
             ></label
           ><button onclick={logout}>{t.logout}</button>
-          <TrackerPanel {api} {lang} {projects} onchange={load} />
+          <TrackerConnection
+            {api}
+            {lang}
+            onproject={(id) => navigate("project_settings", id)}
+            onDirtyChange={(dirty) => (integrationDirty = dirty)}
+          />
         </section>
+      {:else if page === "project_settings"}
+        {@const project = projectMap.get(projectSettingsID)}
+        {#if project}<section class="project-integration-settings">
+            <div class="page-heading">
+              <h1>{trackerT.projectSettings}: {project.name}</h1>
+              <button onclick={() => navigate("projects")}>{t.projects}</button>
+            </div>
+            <h2>{trackerT.general}</h2>
+            <p>{project.description}</p>
+            <button onclick={() => open("project", project.id)}
+              >{t.editProject}</button
+            >
+            {#key project.id}<TrackerPanel
+                {api}
+                {lang}
+                {projects}
+                projectID={project.id}
+                projectName={project.name}
+                onchange={load}
+                onconnection={() => navigate("settings")}
+                onDirtyChange={(dirty) => (integrationDirty = dirty)}
+              />{/key}
+          </section>{:else}<button onclick={() => navigate("projects")}
+            >{t.projects}</button
+          >{/if}
       {:else if page === "projects"}<div class="page-heading">
           <div>
             <p class="eyebrow">{t.workspace}</p>
@@ -615,7 +658,9 @@
                 {t.releases}</small
               >
               <div class="card-actions">
-                <button onclick={() => open("project", p.id)}>{t.edit}</button
+                <button onclick={() => open("project", p.id)}>{t.edit}</button>
+                <button onclick={() => navigate("project_settings", p.id)}
+                  >{trackerT.projectSettings}</button
                 ><button
                   aria-label={`${t.moveUp} ${p.name}`}
                   disabled={i === 0}
@@ -1080,13 +1125,15 @@
           >
         </div>
         <div class="detail-content">
-          <TrackerPanel
-            {api}
-            {lang}
-            {projects}
-            milestoneID={current.id}
-            onchange={load}
-          />
+          {#key current.project_id}<TrackerPanel
+              {api}
+              {lang}
+              {projects}
+              milestoneID={current.id}
+              projectID={current.project_id}
+              projectName={projectMap.get(current.project_id)?.name || ""}
+              onchange={load}
+            />{/key}
           <div class="metadata">
             <div>
               <span>{t.planned_date}</span><strong

@@ -1,5 +1,23 @@
 export const trackerEn = {
   heading: "Yandex Tracker",
+  projectSettings: "Project settings",
+  projectSettingsHint:
+    "Selections and mappings are configured independently in each project.",
+  sharedConnection: "Shared connection",
+  syncEnabled: "Synchronization enabled",
+  syncDisabled: "Synchronization disabled",
+  notConfigured: "Not configured",
+  globalConnectionSettings: "Open global connection settings",
+  projectEnabled: "Enable this project's synchronization",
+  connectionDisabled:
+    "The shared Tracker connection is disabled. Project settings can still be saved.",
+  tokenAvailability: "Backend credential",
+  tokenAvailable: "Available",
+  tokenMissing: "Not configured",
+  syncAll: "Synchronize all enabled projects",
+  retryConnection: "Reset shared connection cooldown",
+  discard: "Discard unsaved integration settings?",
+  general: "General",
   intro:
     "Import a selection, then keep mapped milestones and dependencies synchronized. New issues require a confirmed import.",
   enabled: "Enable integration",
@@ -86,6 +104,7 @@ export const trackerEn = {
     "Unmapped fields remain local. Read-only mapped fields must be changed in Tracker or unlinked first.",
   destination: "Destination queue",
   publish: "Publish to Tracker",
+  cancelPublication: "Cancel pending publication",
   saved: "Tracker settings saved.",
   connected: "Connection succeeded.",
   scheduled: "Synchronization scheduled. Status refreshes automatically.",
@@ -118,6 +137,24 @@ export const trackerEn = {
 };
 export const trackerRu: typeof trackerEn = {
   heading: "Яндекс Трекер",
+  projectSettings: "Настройки проекта",
+  projectSettingsHint:
+    "Выборки и соответствия настраиваются независимо в каждом проекте.",
+  sharedConnection: "Общее подключение",
+  syncEnabled: "Синхронизация включена",
+  syncDisabled: "Синхронизация выключена",
+  notConfigured: "Не настроено",
+  globalConnectionSettings: "Открыть общие настройки подключения",
+  projectEnabled: "Включить синхронизацию этого проекта",
+  connectionDisabled:
+    "Общее подключение Трекера выключено. Настройки проекта можно сохранить.",
+  tokenAvailability: "Секрет на сервере",
+  tokenAvailable: "Доступен",
+  tokenMissing: "Не настроен",
+  syncAll: "Синхронизировать все включённые проекты",
+  retryConnection: "Сбросить общую задержку подключения",
+  discard: "Отменить несохранённые настройки интеграции?",
+  general: "Основное",
   intro:
     "Импортируйте выборку и синхронизируйте настроенные поля и зависимости. Новые задачи требуют подтверждения импорта.",
   enabled: "Включить интеграцию",
@@ -204,6 +241,7 @@ export const trackerRu: typeof trackerEn = {
     "Ненастроенные поля остаются локальными. Поля только для чтения меняются в Трекере или после отключения связи.",
   destination: "Очередь назначения",
   publish: "Опубликовать в Трекере",
+  cancelPublication: "Отменить ожидающую публикацию",
   saved: "Настройки Трекера сохранены.",
   connected: "Подключение успешно.",
   scheduled:
@@ -238,6 +276,50 @@ export const trackerRu: typeof trackerEn = {
 
 // Backend diagnostics remain stable for API clients; translate them at the UI boundary.
 const messagesRu: Record<string, string> = {
+  "Settings changed in another session; reload before saving":
+    "Настройки изменены в другой сессии. Обновите страницу и проверьте изменения перед сохранением",
+  "Finish or unlink pending operations before changing their mapping context":
+    "Дождитесь завершения операций или отключите привязку вех перед изменением соответствий",
+  "Pending publication destination cannot be removed or changed; unlink it first":
+    "Очередь ожидающей публикации нельзя удалить или изменить. Сначала отмените публикацию через отключение привязки вехи",
+  "Project Tracker settings are not configured":
+    "Настройки Трекера для проекта не заданы",
+  "Project synchronization disabled or unconfigured":
+    "Синхронизация проекта выключена или не настроена",
+  "Tracker integration or project synchronization disabled":
+    "Общее подключение или синхронизация проекта выключены",
+  "Project synchronization disabled": "Синхронизация проекта выключена",
+  "Project not found": "Проект не найден",
+  "Organization ID is required": "Укажите ID организации",
+  "polling interval must be 30–86400 seconds":
+    "Интервал опроса должен быть от 30 до 86400 секунд",
+  "Each selection needs a unique stable ID":
+    "Каждой выборке нужен уникальный стабильный ID",
+  "Preview belongs to another project":
+    "Предпросмотр принадлежит другому проекту",
+  "Preview contains another project's milestone":
+    "Предпросмотр содержит веху другого проекта",
+  "Select a queue destination belonging to this project":
+    "Выберите очередь назначения из настроек этого проекта",
+  "Unlink the milestone and cancel pending operations before moving it to another project":
+    "Перед переносом в другой проект отключите привязку вехи и отмените ожидающие операции",
+  "Pending operations require review: mapping context changed":
+    "Проверьте ожидающие операции: соответствия изменились",
+  "Pending publication destination requires review":
+    "Проверьте очередь ожидающей публикации",
+  "Dependency synchronization paused: endpoint project disabled, outside scope, conflicted or unavailable":
+    "Синхронизация связи приостановлена: второй проект выключен, вне выборки, в конфликте или недоступен",
+  "Dependency synchronization paused: endpoint project disabled, pending, outside scope or unavailable":
+    "Синхронизация связи приостановлена: второй проект выключен, ожидает синхронизации, вне выборки или недоступен",
+  "Dependency synchronization paused: endpoint mapping unavailable":
+    "Синхронизация связи приостановлена: соответствие связи во втором проекте не настроено",
+  "Legacy linked milestones or pending operations have no selection for this project. Synchronization is paused until destinations are reviewed.":
+    "У прежних привязок или операций нет выборки для этого проекта. Проверьте очереди назначения перед включением синхронизации.",
+  "Legacy publication destination is ambiguous or missing. Pending publication retained; review selections and unlink/cancel the operation before enabling.":
+    "Прежняя очередь публикации неоднозначна или отсутствует. Операция сохранена. Проверьте выборки и отмените публикацию перед включением синхронизации.",
+  "Legacy selections could not be assigned safely. Original settings are retained in tracker_legacy_config; review project destinations.":
+    "Не удалось однозначно распределить прежние выборки. Исходные настройки сохранены в tracker_legacy_config. Проверьте назначения проектов.",
+
   "Unlink imported milestones before changing field IDs, formats or link mappings":
     "Отключите связи импортированных вех перед изменением ID, форматов полей или соответствий зависимостей",
   "This database is already bound to a Tracker organization":
@@ -353,6 +435,16 @@ export function trackerMessage(message: string, lang: string): string {
   );
   if (issueKey)
     return `${issueKey[1]} — ключ задачи. Укажите очередь ${issueKey[2]} или поисковый запрос Key: ${issueKey[3]}`;
+  const dependencyConflict = raw.match(
+    /^Dependency configuration conflict: projects (.+) and (.+) disagree on Tracker link type (.+)$/,
+  );
+  if (dependencyConflict)
+    return `Конфликт настроек связи: проекты ${dependencyConflict[1]} и ${dependencyConflict[2]} по-разному настроили тип Трекера ${dependencyConflict[3]}`;
+  const missingLink = raw.match(
+    /^Dependency synchronization paused: endpoint project has no mapping for Tracker link type (.+)$/,
+  );
+  if (missingLink)
+    return `Синхронизация связи приостановлена: у второго проекта нет соответствия для типа Трекера ${missingLink[1]}`;
   const prefixes: Record<string, string> = {
     "Tracker HTTP ": "Трекер HTTP ",
     "hard dependency cycle: ": "Цикл обязательных зависимостей: ",

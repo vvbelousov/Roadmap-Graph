@@ -1,5 +1,20 @@
 # Verification and acceptance evidence
 
+## Update: 2026-10-29 project-specific Tracker settings
+
+Verification used isolated temporary SQLite databases, the existing local Tracker HTTP emulator, and a separate loopback backend with no Tracker token. No real Tracker issues, running deployment, or production database were modified.
+
+- Backend: 36 test functions passed. Full `go test -race -cover ./...` passed (76.9% server statement coverage), followed by a race check of the added undirected cross-project ownership regression. `go vet ./...` and native production compilation passed.
+- Frontend: 25 tests passed, including project-only status resolution, custom-date draft preservation, canonical saves, shared connection setup without projects, navigation discard protection, and cancellation of retained publications in disabled projects. Svelte checking reported zero errors/warnings; production build passed.
+- Browser: all 4 Playwright scenarios passed in Chrome against the isolated backend. These cover existing roadmap behavior, global connection → project configuration → preview/confirmation/conflict resolution, Russian/light/mobile global settings, and independent A/B settings with unsaved-draft cancellation/acceptance and mobile project mapping controls.
+- Docker: the local `roadmap-graph:project-settings-test` image built successfully. No production container was started, replaced or deployed.
+- Migration tests start from the original v2 schema and retain issue identities, baselines/conflicts/exclusions, outbox unique IDs, publication queues and attempts/backoff. Projects without a legacy selection pause with review warnings; restart preserves independent migrated configurations.
+- Project integration tests cover different queues/date fields/status meanings/permissions/outgoing transitions, stale-save rejection, preview token ownership, overlapping identities, publication selection reordering, protected mapping context and moves, disabled/invalid project isolation, deletion cleanup, cross-project hard/related link ownership and deduplication, incompatible mappings, and paused removals without retry exhaustion.
+
+Remaining limits: one backend process per SQLite database; pending operations must finish or be explicitly unlinked before changing mappings; linked/pending milestones cannot move projects; ambiguous legacy publication destinations require review/cancellation. Actual organization-specific workflow/schema behavior still requires separately authorized service acceptance testing. Existing Tracker link/status endpoints retain their documented concurrency limits; no distributed transaction is claimed. Docker runtime/volume backup and large-graph performance were outside this change. Nothing was committed, pushed or deployed.
+
+The earlier verification records below describe previous revisions.
+
 ## Update: 2026-10-29 diagnostics and settings
 
 - Passed 25 backend tests, including status-key corrections after import, three-way conflict preservation after mapping changes, and credential/payload redaction in debug logs. `go vet ./...` and production backend compilation passed.

@@ -79,19 +79,27 @@ All routes require the existing session and mutation CSRF header. Credentials ar
 
 | Method | Endpoint | Body / result |
 |---|---|---|
-| GET | `/api/tracker` | `config`, `records`, `outbox`, `last_success`, `last_error`, `running`; no credentials |
-| PUT | `/api/tracker/config` | Full config, see `docs/tracker-config.example.json`; field identity/format changes require unlinking; status keys/meanings and write permissions can be corrected after import and use normal three-way reconciliation |
-| POST | `/api/tracker/test` | Tests saved connection using current user endpoint |
-| POST | `/api/tracker/preview` | Persisted, expiring preview: `id`, `projects`, `milestones`, `links`, `skipped`, `warnings`, `unmapped_statuses`; no graph writes |
-| POST | `/api/tracker/import` | `{ "preview_id": "..." }`; atomically applies unchanged preview |
-| POST | `/api/tracker/sync` | Returns 202 after scheduling; poll GET for results |
-| POST | `/api/tracker/retry` | Resets outbox attempt limits/backoff; then synchronize |
-| POST | `/api/tracker/milestones/{id}/publish` | `{ "selection": 0 }` zero-based queue destination; returns 202 after durable enqueue |
-| POST | `/api/tracker/milestones/{id}/unlink` | Excludes the stable external issue ID; clears its outgoing intent; retains both objects |
-| POST | `/api/tracker/milestones/{id}/resolve` | `{ "choices": { "title": "local", "description": "remote" } }`; choose every disputed field |
+| GET | `/api/tracker` | Shared `config`, project summaries, aggregate records/outbox, health/warnings, `token_available`; no credentials |
+| PUT | `/api/tracker/config` | Shared connection only, including current `revision`; see [example](tracker-config.example.json); returns canonical saved config with incremented revision |
+| POST | `/api/tracker/test` | Tests saved shared connection without requiring any project or selection |
+| POST | `/api/tracker/sync` | 202, schedules all enabled projects under the shared connection lease |
+| POST | `/api/tracker/retry` | Resets only the shared connection cooldown |
+| GET | `/api/projects/{id}/tracker` | Project `config`, `configured`, read-only shared `connection`, scoped records/outbox, health/warnings |
+| PUT | `/api/projects/{id}/tracker/config` | Independent full project config with current `revision`; see [example](tracker-project-config.example.json); canonical response increments revision |
+| POST | `/api/projects/{id}/tracker/preview` | Expiring project-owned preview: `id`, `project_id`, `projects`, `milestones`, `links`, `skipped`, `warnings`, `unmapped_statuses`; no graph writes |
+| POST | `/api/projects/{id}/tracker/import` | `{ "preview_id": "..." }`; atomically applies unchanged preview owned by this project |
+| POST | `/api/projects/{id}/tracker/sync` | 202, schedules only this project's reconciliation; GET for results |
+| POST | `/api/projects/{id}/tracker/retry` | Resets only this project's outbox attempts/backoff; then synchronize |
+| POST | `/api/tracker/milestones/{id}/publish` | `{ "selection_id": "core-releases" }`; stable queue destination from the milestone's project only; 202 after durable enqueue |
+| POST | `/api/tracker/milestones/{id}/unlink` | Excludes the stable external identity and clears its pending work; retains both objects |
+| POST | `/api/tracker/milestones/{id}/resolve` | `{ "choices": { "title": "local", "description": "remote" } }`; choose every disputed field using the owning project's mapping |
 
-Preview returns 409 on confirmation when local state/config has changed or the snapshot expired; request a fresh preview. Invalid mappings or unsupported values return 422. Connection failures expose sanitized messages and HTTP status codes, not remote response bodies. Link types are explicit; the configured `direction` marks the queried issue as prerequisite. Local mapped read-only field edits are rejected; unmapped field edits stay local. Deleting local milestones/projects excludes their Tracker records without deleting remote issues.
+Settings GET returns revision 0 for an unsaved configuration. PUT requires that revision and returns the new one. Stale saves return 409; reload and review before retrying. Shared settings contain no selections or mappings, and project selections contain only stable `id`, `queue`, and `query` (no `project_id`/`new_project`). Unknown/legacy fields return 400. Nonexistent project IDs return 404. Legacy global `/api/tracker/preview` and `/api/tracker/import` return 410; they cannot overwrite project mappings.
 
-The optional API `new_project` selection object accepts the normal Project fields (ID/timestamps generated internally); omit `project_id` when using it. The UI uses existing projects, which can be created through the normal project form. See [Tracker guide](TRACKER.md) for scope and concurrency semantics.
+Confirmation returns 409 for a wrong-project, stale, or expired token. Configuration changes in another project also invalidate previews conservatively because dependencies can cross projects. Invalid mappings/unsupported values return 422. Shared and project enablement are both required for preview/sync/publication. A disabled project can save partial settings without a selection and remains usable locally.
 
-Preview `unmapped_statuses` contains `{key,name,count}` for each unknown status in new selected issues. Skipped notices retain `reason` and may also contain a `reasons` array of simultaneous blockers. The frontend can submit explicit mappings using the existing config endpoint and request a new preview; no mapping is inferred automatically.
+Field identity/codec/link changes require unlinking that project's bindings. Any mapping-context change is blocked while that project has pending operations; saved queue destinations used by publications cannot be changed or removed. Reordering selections is safe. Status mappings and write permissions may change after pending operations finish. Cross-project dependency ownership and pause rules are documented in the [Tracker guide](TRACKER.md).
+
+Connection failures expose sanitized diagnostics without remote bodies. Mapped read-only edits use the milestone's project permissions; unmapped edits remain local. Moving linked/pending milestones to another project is rejected. Deleting milestones/projects retains external exclusions and never deletes Tracker issues; project deletion also removes configuration, previews and pending operations.
+
+Preview `unmapped_statuses` contains `{key,name,count}` for each unknown status in new selected issues. Skipped notices retain `reason` and may also contain a `reasons` array of simultaneous blockers. The frontend can submit explicit mappings using that project's config endpoint and request a new preview; no mapping is inferred automatically.

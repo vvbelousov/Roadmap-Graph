@@ -1400,3 +1400,13 @@ dialog .form-grid > label {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.project-integration-settings {
+  max-width: 980px;
+  width: 100%;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.project-integration-settings .tracker-panel {
+  max-width: none;
+}

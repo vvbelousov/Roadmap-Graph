@@ -38,9 +38,7 @@ func (s *Server) fetchEdges(ctx context.Context, c TrackerConfig, locals map[str
 func (s *Server) remoteEdges(ctx context.Context, c TrackerConfig, locals map[string]string) (map[string]trackerEdge, []TrackerNotice, error) {
 	out := map[string]trackerEdge{}
 	warnings := []TrackerNotice{}
-	if len(c.Links) == 0 {
-		return out, warnings, nil
-	}
+
 	types := []string{}
 	for _, m := range c.Links {
 		types = append(types, m.Type)
@@ -51,6 +49,20 @@ func (s *Server) remoteEdges(ctx context.Context, c TrackerConfig, locals map[st
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		sourceCfg, e := s.localTrackerContext(c, locals[id])
+		if e != nil {
+			return nil, warnings, e
+		}
+		if !sourceCfg.Enabled {
+			continue
+		}
+		types = []string{}
+		for _, mapping := range sourceCfg.Links {
+			types = append(types, mapping.Type)
+		}
+		if len(types) == 0 {
+			continue
+		}
 		for page := 1; page <= 10000; page++ {
 			var v struct {
 				Links []trackerRemoteLink `json:"links"`
@@ -60,12 +72,15 @@ func (s *Server) remoteEdges(ctx context.Context, c TrackerConfig, locals map[st
 				return nil, warnings, e
 			}
 			for _, l := range v.Links {
-				for _, m := range c.Links {
+				for _, m := range sourceCfg.Links {
 					if m.Type != l.Type.ID {
 						continue
 					}
 					other, ok := locals[l.Object.ID]
 					if !ok {
+						if sourceCfg.ProjectID != c.ProjectID {
+							continue
+						}
 						warnings = append(warnings, TrackerNotice{Key: id, Reason: "linked issue outside selection: " + l.Object.Key})
 						continue
 					}
@@ -78,6 +93,17 @@ func (s *Server) remoteEdges(ctx context.Context, c TrackerConfig, locals map[st
 					}
 					d := Dependency{PrerequisiteID: a, DependentID: b, Type: m.LocalType}
 					k := edgeKey(d)
+					otherCfg, e := s.localTrackerContext(c, other)
+					if e != nil {
+						return nil, warnings, e
+					}
+					if sourceCfg.ProjectID != c.ProjectID && otherCfg.ProjectID != c.ProjectID {
+						continue
+					}
+					if e = compatibleLink(sourceCfg, otherCfg, m); e != nil {
+						warnings = append(warnings, TrackerNotice{Key: id, Reason: e.Error(), EdgeKey: k})
+						continue
+					}
 					if d.Type == "related_to" {
 						d = parseEdge(k)
 					}
@@ -95,7 +121,7 @@ func (s *Server) remoteEdges(ctx context.Context, c TrackerConfig, locals map[st
 	return out, warnings, nil
 }
 func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map[string]string) error {
-	remote, _, e := s.remoteEdges(ctx, c, locals)
+	remote, warnings, e := s.remoteEdges(ctx, c, locals)
 	if e != nil {
 		return e
 	}
@@ -107,9 +133,68 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 	for ext, id := range locals {
 		scope[id] = ext
 	}
+	blocked := map[string]bool{}
+	for _, notice := range warnings {
+		if notice.EdgeKey != "" {
+			blocked[notice.EdgeKey] = true
+		}
+	}
+	bound := map[string]TrackerRecord{}
+	records, e := s.trackerRecords()
+	if e != nil {
+		return e
+	}
+	for _, record := range records {
+		if record.LocalID != "" && record.State != "unlinked" {
+			bound[record.LocalID] = record
+		}
+	}
+	for _, d := range g.Dependencies {
+		a, aok := bound[d.PrerequisiteID]
+		b, bok := bound[d.DependentID]
+		if aok && bok && (a.ProjectID == c.ProjectID || b.ProjectID == c.ProjectID) && a.ProjectID != b.ProjectID {
+			if scope[d.PrerequisiteID] == "" || scope[d.DependentID] == "" {
+				blocked[edgeKey(d)] = true
+				warnings = append(warnings, TrackerNotice{Key: a.Key, Reason: "Dependency synchronization paused: endpoint project disabled, outside scope, conflicted or unavailable", EdgeKey: edgeKey(d)})
+				continue
+			}
+			ac, e := s.localTrackerContext(c, d.PrerequisiteID)
+			if e != nil {
+				return e
+			}
+			bc, e := s.localTrackerContext(c, d.DependentID)
+			if e != nil {
+				return e
+			}
+			mapping := localLinkMapping(ac, d.Type)
+			if mapping == nil {
+				blocked[edgeKey(d)] = true
+				warnings = append(warnings, TrackerNotice{Key: a.Key, Reason: "Dependency synchronization paused: endpoint mapping unavailable", EdgeKey: edgeKey(d)})
+			} else if e = compatibleLink(ac, bc, *mapping); e != nil {
+				blocked[edgeKey(d)] = true
+				warnings = append(warnings, TrackerNotice{Key: a.Key, Reason: e.Error(), EdgeKey: edgeKey(d)})
+			}
+		}
+	}
+	for k := range remote {
+		owner, _, e := s.edgeOwner(c, remote[k].Dependency, scope)
+		if e != nil {
+			return e
+		}
+		if owner != c.ProjectID || blocked[k] {
+			delete(remote, k)
+		}
+	}
 	local := map[string]Dependency{}
 	for _, d := range g.Dependencies {
-		if scope[d.PrerequisiteID] != "" && scope[d.DependentID] != "" {
+		if scope[d.PrerequisiteID] != "" && scope[d.DependentID] != "" && !blocked[edgeKey(d)] {
+			owner, _, e := s.edgeOwner(c, d, scope)
+			if e != nil {
+				return e
+			}
+			if owner != c.ProjectID {
+				continue
+			}
 			for _, m := range c.Links {
 				if d.Type == m.LocalType {
 					local[edgeKey(d)] = d
@@ -132,6 +217,34 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 		baseline[k] = b
 	}
 	rows.Close()
+	for k := range baseline {
+		d := parseEdge(k)
+		a, aok := bound[d.PrerequisiteID]
+		b, bok := bound[d.DependentID]
+		if aok && bok && a.ProjectID != b.ProjectID && (a.ProjectID == c.ProjectID || b.ProjectID == c.ProjectID) && (scope[d.PrerequisiteID] == "" || scope[d.DependentID] == "") {
+			blocked[k] = true
+			warnings = append(warnings, TrackerNotice{Key: a.Key, Reason: "Dependency synchronization paused: endpoint project disabled, pending, outside scope or unavailable", EdgeKey: k})
+		}
+	}
+	for k := range baseline {
+		d := parseEdge(k)
+		if scope[d.PrerequisiteID] == "" || scope[d.DependentID] == "" || blocked[k] {
+			delete(baseline, k)
+			continue
+		}
+		owner, _, e := s.edgeOwner(c, d, scope)
+		if e != nil {
+			return e
+		}
+		if owner != c.ProjectID {
+			delete(baseline, k)
+		}
+	}
+	for _, notice := range warnings {
+		if notice.EdgeKey != "" {
+			s.db.Exec("INSERT INTO tracker_edges(edge_key,baseline,error) VALUES(?,0,?) ON CONFLICT(edge_key) DO UPDATE SET error=excluded.error", notice.EdgeKey, notice.Reason)
+		}
+	}
 	keys := map[string]bool{}
 	for k := range remote {
 		keys[k] = true
@@ -174,6 +287,13 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 		if scope[d.PrerequisiteID] == "" || scope[d.DependentID] == "" {
 			continue
 		}
+		owner, ownerLocal, e := s.edgeOwner(c, d, scope)
+		if e != nil {
+			return e
+		}
+		if owner != c.ProjectID || blocked[k] {
+			continue
+		}
 		_, l := local[k]
 		r, exists := remote[k]
 		b := baseline[k]
@@ -193,7 +313,7 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 					}
 				}
 				if e == nil {
-					_, e = tx.Exec("INSERT INTO tracker_edges VALUES(?,?) ON CONFLICT(edge_key) DO UPDATE SET baseline=excluded.baseline", k, exists)
+					_, e = tx.Exec("INSERT INTO tracker_edges(edge_key,baseline,owner_project_id,error) VALUES(?,?,?,'') ON CONFLICT(edge_key) DO UPDATE SET baseline=excluded.baseline,owner_project_id=excluded.owner_project_id,error=''", k, exists, c.ProjectID)
 				}
 				if e != nil {
 					tx.Rollback()
@@ -204,7 +324,7 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 				}
 				continue
 			} else if l {
-				if e = s.ensureLinkIntent(d.PrerequisiteID); e != nil {
+				if e = s.ensureLinkIntent(ownerLocal); e != nil {
 					return e
 				}
 				var blocked int
@@ -224,9 +344,9 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 				if mapping == nil {
 					continue
 				}
-				_, e = s.tracker.request(ctx, c, "POST", issuePath(scope[d.PrerequisiteID])+"/links", map[string]string{"relationship": mapping.Relationship, "issue": scope[d.DependentID]}, nil)
+				_, e = s.tracker.request(ctx, c, "POST", issuePath(scope[ownerLocal])+"/links", map[string]string{"relationship": mapping.Relationship, "issue": scope[otherEndpoint(d, ownerLocal)]}, nil)
 			} else {
-				if e = s.ensureLinkIntent(d.PrerequisiteID); e != nil {
+				if e = s.ensureLinkIntent(ownerLocal); e != nil {
 					return e
 				}
 				var blocked int
@@ -242,8 +362,13 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 				return e
 			}
 		}
-		if _, e = s.db.Exec("INSERT INTO tracker_edges VALUES(?,?) ON CONFLICT(edge_key) DO UPDATE SET baseline=excluded.baseline", k, l); e != nil {
+		if _, e = s.db.Exec("INSERT INTO tracker_edges(edge_key,baseline,owner_project_id,error) VALUES(?,?,?,'') ON CONFLICT(edge_key) DO UPDATE SET baseline=excluded.baseline,owner_project_id=excluded.owner_project_id,error=''", k, l, c.ProjectID); e != nil {
 			return e
+		}
+	}
+	for _, notice := range warnings {
+		if notice.EdgeKey != "" {
+			return trackerDependencyPause{Message: notice.Reason}
 		}
 	}
 	return nil
@@ -259,4 +384,11 @@ func (s *Server) ensureLinkIntent(id string) error {
 		return e
 	}
 	return tx.Commit()
+}
+
+func otherEndpoint(d Dependency, source string) string {
+	if source == d.PrerequisiteID {
+		return d.DependentID
+	}
+	return d.PrerequisiteID
 }

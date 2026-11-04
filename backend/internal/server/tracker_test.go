@@ -16,6 +16,7 @@ import (
 )
 
 type fakeTracker struct {
+	transitionTargets                    map[string]string
 	failPatch                            int
 	loseLink                             bool
 	mu                                   sync.Mutex
@@ -158,11 +159,15 @@ func (f *fakeTracker) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if parts[3] == "transitions" {
+		target := "done"
+		if f.transitionTargets[id] != "" {
+			target = f.transitionTargets[id]
+		}
 		if len(parts) == 4 {
-			send([]any{map[string]any{"id": "complete", "to": map[string]any{"key": "done"}}})
+			send([]any{map[string]any{"id": "complete", "to": map[string]any{"key": target}}})
 			return
 		}
-		issue["status"] = map[string]any{"key": "done"}
+		issue["status"] = map[string]any{"key": target}
 		issue["version"] = issue["version"].(float64) + 1
 		send([]any{})
 		return
@@ -217,8 +222,9 @@ func trackerSetup(t *testing.T) (*client, *fakeTracker, TrackerConfig) {
 	p := project(c)
 	cfg := defaultTrackerConfig()
 	cfg.Enabled = true
+	cfg.ProjectID = p.ID
 	cfg.OrgID = "org"
-	cfg.Selections = []TrackerSelection{{Queue: "CORE", ProjectID: p.ID}}
+	cfg.Selections = []TrackerSelection{{ID: "core-selection", Queue: "CORE", ProjectID: p.ID}}
 	cfg.Fields["status"] = TrackerField{"status", true, "status"}
 	cfg.Fields["completed_date"] = TrackerField{"doneDate", true, "date"}
 	cfg.Fields["owner"] = TrackerField{"assignee", true, "id"}
@@ -226,15 +232,15 @@ func trackerSetup(t *testing.T) (*client, *fakeTracker, TrackerConfig) {
 	cfg.Statuses = map[string]string{"open": "planned", "done": "completed", "rejected": "cancelled"}
 	cfg.WriteStatuses = map[string]string{"planned": "open", "completed": "done", "cancelled": "rejected"}
 	cfg.Links = []TrackerLinkMapping{{"depends", "outward", "requires", "is dependent by"}, {"relates", "outward", "related_to", "relates"}}
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	saveTestTracker(c, cfg, 200)
 	f := newFakeTracker(t, c.s)
 	return c, f, cfg
 }
 func importTracker(t *testing.T, c *client) TrackerPreview {
 	t.Helper()
 	var p TrackerPreview
-	json.Unmarshal(c.expect("POST", "/api/tracker/preview", "{}", 200), &p)
-	c.expect("POST", "/api/tracker/import", jsonText(map[string]string{"preview_id": p.ID}), 200)
+	json.Unmarshal(c.expect("POST", projectTrackerPath(c, "preview"), "{}", 200), &p)
+	c.expect("POST", projectTrackerPath(c, "import"), jsonText(map[string]string{"preview_id": p.ID}), 200)
 	return p
 }
 func syncOK(t *testing.T, s *Server, cfg TrackerConfig) {
@@ -344,7 +350,7 @@ func TestTrackerPublicationNetworkRecoveryAndOutboxRestart(t *testing.T) {
 	g, _ := c.s.graph()
 	m := milestone(c, g.Projects[0], "Publish", "2027-03-01")
 	f.loseCreate = true
-	c.expect("POST", "/api/tracker/milestones/"+m.ID+"/publish", `{"selection":0}`, 202)
+	c.expect("POST", "/api/tracker/milestones/"+m.ID+"/publish", `{"selection_id":"core-selection"}`, 202)
 	if c.s.syncTracker(context.Background(), cfg) == nil {
 		t.Fatal("expected lost response")
 	}
@@ -540,10 +546,10 @@ func TestTrackerTransactionalOutboxAndStalePreview(t *testing.T) {
 	c, f, _ := trackerSetup(t)
 	f.add("1", "Core")
 	var p TrackerPreview
-	json.Unmarshal(c.expect("POST", "/api/tracker/preview", "{}", 200), &p)
+	json.Unmarshal(c.expect("POST", projectTrackerPath(c, "preview"), "{}", 200), &p)
 	g, _ := c.s.graph()
 	milestone(c, g.Projects[0], "Local", "2027-03-01")
-	c.expect("POST", "/api/tracker/import", jsonText(map[string]string{"preview_id": p.ID}), 409)
+	c.expect("POST", projectTrackerPath(c, "import"), jsonText(map[string]string{"preview_id": p.ID}), 409)
 	importTracker(t, c)
 	m := localByExternal(t, c.s, "1")
 	if _, e := c.s.db.Exec("CREATE TRIGGER reject_outbox BEFORE INSERT ON tracker_outbox BEGIN SELECT RAISE(ABORT,'outbox unavailable'); END"); e != nil {
@@ -554,17 +560,17 @@ func TestTrackerTransactionalOutboxAndStalePreview(t *testing.T) {
 		t.Fatal("edit committed without outbox", got)
 	}
 	c.s.db.Exec("DROP TRIGGER reject_outbox")
-	cfg, _ := c.s.trackerConfig()
+	cfg, _ := c.s.resolveTrackerConfig(testTrackerProject(c))
 	cfg.Enabled = false
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	saveTestTracker(c, cfg, 200)
 	c.expect("POST", "/api/tracker/sync", "{}", 409)
-	c.expect("POST", "/api/tracker/preview", "{}", 409)
+	c.expect("POST", projectTrackerPath(c, "preview"), "{}", 409)
 	cfg.Enabled = true
 	cfg.Fields["description"] = TrackerField{"description", false, "string"}
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200) // write permission changes preserve field identity
+	saveTestTracker(c, cfg, 200) // write permission changes preserve field identity
 	c.expect("PATCH", "/api/milestones/"+m.ID, `{"description":"readonly edit"}`, 409)
 	cfg.Fields["description"] = TrackerField{"anotherField", true, "string"}
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 409) // cannot silently reinterpret active baselines
+	saveTestTracker(c, cfg, 409) // cannot silently reinterpret active baselines
 }
 func TestTrackerSafePaginationRedirectAndSanitizedErrors(t *testing.T) {
 	c, f, cfg := trackerSetup(t)
@@ -623,7 +629,7 @@ func TestTrackerPendingRetryLimitAndRetryAfter(t *testing.T) {
 	if records[0].State != "error" {
 		t.Fatal(records)
 	}
-	c.expect("POST", "/api/tracker/retry", "{}", 200)
+	retryTestTracker(c)
 	syncOK(t, c.s, cfg)
 	if f.patches != 1 {
 		t.Fatal("manual retry failed")
@@ -639,7 +645,7 @@ func TestTrackerPreviewCycleIsAtomic(t *testing.T) {
 	f.add("2", "ADX")
 	f.links["1"] = [3]string{"1", "2", "depends"}
 	f.links["2"] = [3]string{"2", "1", "depends"}
-	c.expect("POST", "/api/tracker/preview", "{}", 422)
+	c.expect("POST", projectTrackerPath(c, "preview"), "{}", 422)
 	g, _ := c.s.graph()
 	if len(g.Milestones) != 0 || len(g.Dependencies) != 0 {
 		t.Fatal("preview persisted data")
@@ -652,8 +658,8 @@ func TestTrackerRemovedMappingsStayLocalAndCooldownPersists(t *testing.T) {
 	delete(cfg.Fields, "status")
 	cfg.Statuses = map[string]string{}
 	cfg.WriteStatuses = map[string]string{}
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
-	loaded, e := c.s.trackerConfig()
+	saveTestTracker(c, cfg, 200)
+	loaded, e := c.s.resolveTrackerConfig(testTrackerProject(c))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -676,7 +682,7 @@ func TestTrackerRemovedMappingsStayLocalAndCooldownPersists(t *testing.T) {
 	if f.pages != pages {
 		t.Fatal("request made during cooldown")
 	}
-	c.expect("POST", "/api/tracker/retry", "{}", 200)
+	retryTestTracker(c)
 	syncOK(t, c.s, cfg)
 }
 
@@ -700,14 +706,14 @@ func TestTrackerMutationThrottleAndLostLinkResponse(t *testing.T) {
 	if c.s.syncTracker(context.Background(), cfg) == nil || f.pages != pages {
 		t.Fatal("connection did not respect throttle")
 	}
-	c.expect("POST", "/api/tracker/retry", "{}", 200)
+	retryTestTracker(c)
 	syncOK(t, c.s, cfg)
 	f.loseLink = true
 	edge(c, a, b, "requires", 201)
 	if c.s.syncTracker(context.Background(), cfg) == nil {
 		t.Fatal("lost link response not reported")
 	}
-	c.expect("POST", "/api/tracker/retry", "{}", 200)
+	retryTestTracker(c)
 	syncOK(t, c.s, cfg)
 	f.mu.Lock()
 	created := f.linkCreates

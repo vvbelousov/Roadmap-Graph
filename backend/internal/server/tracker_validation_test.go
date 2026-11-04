@@ -13,14 +13,14 @@ import (
 func TestTrackerRejectsIssueKeyQueueWithoutNetwork(t *testing.T) {
 	c, f, cfg := trackerSetup(t)
 	cfg.Selections[0].Queue = "AP-270"
-	body := c.expect("PUT", "/api/tracker/config", jsonText(cfg), 422)
+	body := saveTestTracker(c, cfg, 422)
 	for _, hint := range []string{"issue key AP-270", "queue AP", "Key: AP-270"} {
 		if !strings.Contains(string(body), hint) {
 			t.Fatalf("missing actionable hint %q: %s", hint, body)
 		}
 	}
 	// Validate previously saved settings too, before even publication recovery can send HTTP.
-	if _, e := c.s.db.Exec("UPDATE tracker_connection SET config=?", jsonText(cfg)); e != nil {
+	if _, e := c.s.db.Exec("UPDATE tracker_project_config SET config=? WHERE project_id=?", jsonText(projectPart(cfg)), cfg.ProjectID); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := c.s.makePreview(context.Background(), cfg); e == nil {
@@ -80,7 +80,7 @@ func TestTrackerPreviewDiscoversStatusesAndReportsBothImportBlockers(t *testing.
 	cfg.Statuses = map[string]string{}
 	cfg.WriteStatuses = map[string]string{}
 	cfg.Fields["planned_date"] = TrackerField{"duedatecustomer", true, "date"}
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	saveTestTracker(c, cfg, 200)
 	f.add("1", "First Epic")
 	f.add("2", "Second Epic")
 	f.add("3", "Third Epic")
@@ -88,7 +88,7 @@ func TestTrackerPreviewDiscoversStatusesAndReportsBothImportBlockers(t *testing.
 	f.issues["2"]["status"] = map[string]any{"key": "open", "display": "Открыт"}
 	f.issues["3"]["status"] = map[string]any{"key": "inProgress", "display": "В работе"}
 	var p TrackerPreview
-	if e := json.Unmarshal(c.expect("POST", "/api/tracker/preview", "{}", 200), &p); e != nil {
+	if e := json.Unmarshal(c.expect("POST", projectTrackerPath(c, "preview"), "{}", 200), &p); e != nil {
 		t.Fatal(e)
 	}
 	if len(p.Items) != 0 || len(p.Skipped) != 3 || len(p.UnmappedStatuses) != 2 {
@@ -108,7 +108,7 @@ func TestTrackerPreviewDiscoversStatusesAndReportsBothImportBlockers(t *testing.
 	}
 	// Explicit user mappings and the configured custom date field make both epics importable.
 	cfg.Statuses = map[string]string{"open": "planned", "inProgress": "in_progress"}
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	saveTestTracker(c, cfg, 200)
 	for _, issue := range f.issues {
 		issue["duedatecustomer"] = "2027-04-12"
 	}
@@ -125,15 +125,15 @@ func TestTrackerCanCorrectStatusKeysAfterImportWithoutUnlinking(t *testing.T) {
 	c, f, cfg := trackerSetup(t)
 	cfg.Statuses["In Progress"] = "in_progress"
 	cfg.WriteStatuses["in_progress"] = "In Progress"
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	saveTestTracker(c, cfg, 200)
 	f.add("1", "Imported milestone")
 	importTracker(t, c)
 	m := localByExternal(t, c.s, "1")
 	delete(cfg.Statuses, "In Progress")
 	cfg.Statuses["inProgress"] = "in_progress"
 	cfg.WriteStatuses["in_progress"] = "inProgress"
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
-	loaded, e := c.s.trackerConfig()
+	saveTestTracker(c, cfg, 200)
+	loaded, e := c.s.resolveTrackerConfig(testTrackerProject(c))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -145,11 +145,11 @@ func TestTrackerCanCorrectStatusKeysAfterImportWithoutUnlinking(t *testing.T) {
 		t.Fatal("mapping correction unlinked the milestone")
 	}
 	// A mapping meaning change and an independent local status edit remain a conflict.
-	c.expect("PATCH", "/api/milestones/"+m.ID, `{"status":"in_progress"}`, 200)
 	cfg.Statuses["open"] = "delayed"
 	delete(cfg.WriteStatuses, "planned")
 	cfg.WriteStatuses["delayed"] = "open"
-	c.expect("PUT", "/api/tracker/config", jsonText(cfg), 200)
+	saveTestTracker(c, cfg, 200)
+	c.expect("PATCH", "/api/milestones/"+m.ID, `{"status":"in_progress"}`, 200)
 	if c.s.syncTracker(context.Background(), cfg) == nil {
 		t.Fatal("status mapping conflict not reported")
 	}

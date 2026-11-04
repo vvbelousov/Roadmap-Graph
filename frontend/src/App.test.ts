@@ -94,6 +94,29 @@ beforeEach(() => {
           },
         ];
       else if (url.endsWith("/settings")) data = {};
+      else if (/\/projects\/[^/]+\/tracker$/.test(url))
+        data = {
+          config: {
+            enabled: false,
+            revision: 0,
+            selections: [],
+            fields: {
+              title: { field: "summary", codec: "string", writable: true },
+              planned_date: { field: "dueDate", codec: "date", writable: true },
+            },
+            statuses: {},
+            write_statuses: {},
+            links: [],
+          },
+          connection: {
+            enabled: false,
+            org_id: "org",
+            auth: "OAuth",
+            org_header: "X-Org-ID",
+          },
+          records: [],
+          outbox: [],
+        };
       else if (url.endsWith("/impact"))
         data = { direct: ["project-x2"], transitive: [], conflicts: [] };
       else if (method === "PATCH") data = { ...fixture.milestones[0], ...body };
@@ -149,6 +172,49 @@ describe("App DOM integration", () => {
     } finally {
       window.history.replaceState({}, "", "/");
     }
+  });
+  it("opens project integration from the sidebar and confirms unsaved project switching", async () => {
+    await boot();
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Project settings COMMON MODULE" }),
+    );
+    await screen.findByRole("heading", {
+      name: "Project settings: COMMON MODULE",
+    });
+    await fireEvent.click(
+      await screen.findByLabelText("Enable this project's synchronization"),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Project settings PROJECT X" }),
+    );
+    expect(confirm).toHaveBeenCalled();
+    expect(
+      screen.getByRole("heading", { name: "Project settings: COMMON MODULE" }),
+    ).toBeTruthy();
+    expect(
+      (
+        screen.getByLabelText(
+          "Enable this project's synchronization",
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    confirm.mockReturnValue(true);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Project settings PROJECT X" }),
+    );
+    await screen.findByRole("heading", { name: "Project settings: PROJECT X" });
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByLabelText(
+            "Enable this project's synchronization",
+          ) as HTMLInputElement
+        ).checked,
+      ).toBe(false),
+    );
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
   it("filters project lanes and restores them using the actual sidebar control", async () => {
     const { container } = await boot();

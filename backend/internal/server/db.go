@@ -14,6 +14,9 @@ var migration string
 //go:embed migrations/002_tracker.sql
 var trackerMigration string
 
+//go:embed migrations/003_project_tracker.sql
+var projectTrackerMigration string
+
 func OpenDB(path string) (*sql.DB, error) {
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -35,6 +38,10 @@ func OpenDB(path string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	_, e = db.Exec(migration + trackerMigration)
 	if e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = migrateProjectTracker(db); e != nil {
 		db.Close()
 		return nil, e
 	}

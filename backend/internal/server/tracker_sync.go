@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"math/rand/v2"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -86,7 +86,7 @@ func (s *Server) recordFailure(x TrackerRecord, e error) error {
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	if httpCode(e) == 429 {
+	if httpCode(e) == 429 || httpCode(e) == 401 {
 		return e
 	}
 	return nil
@@ -245,19 +245,20 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 	}
 	return s.saveTrackerState(m, x, stillPending)
 }
-func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
-	started := time.Now()
-	slog.DebugContext(ctx, "Tracker synchronization started", "selections", len(c.Selections))
-	defer func() {
-		slog.DebugContext(ctx, "Tracker synchronization finished", "success", err == nil, "http_status", httpCode(err), "duration_ms", time.Since(started).Milliseconds())
-	}()
-	if !c.Enabled {
+
+// The SQLite connection lease and rate-limit cooldown are shared across all projects.
+func (s *Server) syncTracker(ctx context.Context, requested TrackerConfig) (err error) {
+	g, e := s.connectionConfig()
+	if e != nil {
+		return e
+	}
+	if !g.Enabled {
 		return fmt.Errorf("Tracker integration disabled")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var retryAfter int64
-	if e := s.db.QueryRow("SELECT next_attempt FROM tracker_retry WHERE id='tracker'").Scan(&retryAfter); e != nil && e != sql.ErrNoRows {
+	if e = s.db.QueryRow("SELECT next_attempt FROM tracker_retry WHERE id='tracker'").Scan(&retryAfter); e != nil && e != sql.ErrNoRows {
 		return e
 	}
 	if retryAfter > time.Now().Unix() {
@@ -268,29 +269,97 @@ func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
 	if e != nil {
 		return e
 	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
+	if n, _ := res.RowsAffected(); n != 1 {
 		return fmt.Errorf("synchronization already running")
 	}
 	defer func() {
-		msg := ""
 		if next := retryTime(err, 0); next > 0 {
-			if _, er := s.db.Exec("INSERT INTO tracker_retry VALUES('tracker',?) ON CONFLICT(id) DO UPDATE SET next_attempt=excluded.next_attempt", next); er != nil && err == nil {
-				err = er
-			}
+			s.db.Exec("INSERT INTO tracker_retry VALUES('tracker',?) ON CONFLICT(id) DO UPDATE SET next_attempt=excluded.next_attempt", next)
 		}
+		msg := ""
+		success := ""
 		if err != nil {
 			msg = err.Error()
-		}
-		if err == nil {
-			_, e = s.db.Exec("UPDATE tracker_connection SET last_success=?,last_error='',lease='',lease_until=0 WHERE lease=?", now(), owner)
 		} else {
-			_, e = s.db.Exec("UPDATE tracker_connection SET last_error=?,lease='',lease_until=0 WHERE lease=?", msg, owner)
+			success = now()
 		}
+		_, e = s.db.Exec("UPDATE tracker_connection SET last_success=CASE WHEN ?='' THEN last_success ELSE ? END,last_error=?,lease='',lease_until=0 WHERE lease=?", success, success, msg, owner)
 		if err == nil {
 			err = e
 		}
 	}()
+	ids := []string{}
+	if requested.ProjectID != "" {
+		ids = append(ids, requested.ProjectID)
+	} else {
+		rows, e := s.db.Query("SELECT project_id FROM tracker_project_config ORDER BY project_id")
+		if e != nil {
+			return e
+		}
+		for rows.Next() {
+			var id string
+			if e = rows.Scan(&id); e != nil {
+				rows.Close()
+				return e
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+	}
+	failures := []string{}
+	for _, id := range ids {
+		c, e := s.resolveTrackerConfig(id)
+		if e != nil {
+			failures = append(failures, id+": "+e.Error())
+			continue
+		}
+		if !c.Enabled {
+			if requested.ProjectID != "" {
+				return fmt.Errorf("Project synchronization disabled")
+			}
+			continue
+		}
+		e = validateTracker(c)
+		if e == nil {
+			e = s.verifyOutboxContext(c)
+		}
+		if e == nil {
+			e = s.syncProjectTracker(ctx, c)
+		}
+		if e != nil {
+			s.db.Exec("UPDATE tracker_project_config SET last_error=? WHERE project_id=?", e.Error(), id)
+			if httpCode(e) == 401 || httpCode(e) == 429 {
+				return e
+			}
+			if requested.ProjectID != "" {
+				return e
+			}
+			failures = append(failures, id+": "+e.Error())
+		} else {
+			s.db.Exec("UPDATE tracker_project_config SET last_success=?,last_error='' WHERE project_id=?", now(), id)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("Project synchronization needs attention: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+func (s *Server) verifyOutboxContext(c TrackerConfig) error {
+	expected := mappingHash(projectPart(c))
+	var n int
+	if e := s.db.QueryRow("SELECT count(*) FROM tracker_outbox WHERE project_id=? AND context_hash!=?", c.ProjectID, expected).Scan(&n); e != nil {
+		return e
+	}
+	if n > 0 {
+		return fmt.Errorf("Pending operations require review: mapping context changed")
+	}
+	return nil
+}
+func (s *Server) syncProjectTracker(ctx context.Context, c TrackerConfig) error {
+	var e error
 	for _, sel := range c.Selections {
 		if e = validateTrackerSelection(sel); e != nil {
 			return e
@@ -332,6 +401,9 @@ func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
 	locals := map[string]string{}
 	anyError := false
 	for _, x := range records {
+		if x.ProjectID != c.ProjectID {
+			continue
+		}
 		if x.State == "unlinked" || x.LocalID == "" {
 			continue
 		}
@@ -358,11 +430,18 @@ func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
 			locals[x.ExternalID] = x.LocalID
 		}
 	}
+	locals, e = s.eligibleTrackerLocals(c, locals)
+	if e != nil {
+		return e
+	}
 	if e = s.reconcileEdges(ctx, c, locals); e != nil {
+		if _, paused := e.(trackerDependencyPause); paused {
+			return e
+		}
 		if e == errTrackerRetryWaiting {
 			return e
 		}
-		_, dbErr := s.db.Exec("UPDATE tracker_outbox SET attempts=attempts+1,next_attempt=?,error=? WHERE kind='links'", retryTime(e, time.Now().Add(30*time.Second+time.Duration(rand.IntN(1000))*time.Millisecond).Unix()), e.Error())
+		_, dbErr := s.db.Exec("UPDATE tracker_outbox SET attempts=attempts+1,next_attempt=?,error=? WHERE kind='links' AND project_id=?", retryTime(e, time.Now().Add(30*time.Second+time.Duration(rand.IntN(1000))*time.Millisecond).Unix()), e.Error(), c.ProjectID)
 		if dbErr != nil {
 			return dbErr
 		}
@@ -370,12 +449,12 @@ func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
 	}
 	// Link operations are convergent; acknowledge only after a successful reconciliation.
 	for _, id := range locals {
-		if _, e = s.db.Exec("DELETE FROM tracker_outbox WHERE kind='links' AND local_id=?", id); e != nil {
+		if _, e = s.db.Exec("DELETE FROM tracker_outbox WHERE kind='links' AND local_id=? AND project_id=?", id, c.ProjectID); e != nil {
 			return e
 		}
 	}
 	var queued int
-	if e = s.db.QueryRow("SELECT count(*) FROM tracker_outbox").Scan(&queued); e != nil {
+	if e = s.db.QueryRow("SELECT count(*) FROM tracker_outbox WHERE project_id=?", c.ProjectID).Scan(&queued); e != nil {
 		return e
 	}
 	if queued > 0 {
@@ -388,18 +467,18 @@ func (s *Server) syncTracker(ctx context.Context, c TrackerConfig) (err error) {
 }
 func (s *Server) publishPending(ctx context.Context, c TrackerConfig) error {
 	type operation struct {
-		ID, LocalID, Payload string
-		Attempts             int
-		Due                  int64
+		ID, LocalID, Payload, SelectionID string
+		Attempts                          int
+		Due                               int64
 	}
 	ops := []operation{}
-	rows, e := s.db.Query("SELECT id,local_id,payload,attempts,next_attempt FROM tracker_outbox WHERE kind='publish'")
+	rows, e := s.db.Query("SELECT id,local_id,payload,attempts,next_attempt,selection_id FROM tracker_outbox WHERE kind='publish' AND project_id=?", c.ProjectID)
 	if e != nil {
 		return e
 	}
 	for rows.Next() {
 		var o operation
-		if e = rows.Scan(&o.ID, &o.LocalID, &o.Payload, &o.Attempts, &o.Due); e != nil {
+		if e = rows.Scan(&o.ID, &o.LocalID, &o.Payload, &o.Attempts, &o.Due, &o.SelectionID); e != nil {
 			rows.Close()
 			return e
 		}
@@ -411,6 +490,15 @@ func (s *Server) publishPending(ctx context.Context, c TrackerConfig) error {
 		return e
 	}
 	for _, op := range ops {
+		valid := false
+		for _, sel := range c.Selections {
+			if sel.ID == op.SelectionID && sel.Queue == op.Payload {
+				valid = true
+			}
+		}
+		if !valid {
+			return fmt.Errorf("Pending publication destination requires review")
+		}
 		if op.Attempts >= 8 || op.Due > time.Now().Unix() {
 			continue
 		}

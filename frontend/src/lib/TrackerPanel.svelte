@@ -6,12 +6,20 @@
     api,
     lang,
     projects = [],
+    projectID = "",
+    projectName = "",
+    onconnection = () => {},
+    onDirtyChange = (_dirty: boolean) => {},
     milestoneID = "",
     onchange = () => {},
   }: {
     api: (path: string, method?: string, body?: any) => Promise<any>;
     lang: string;
     projects?: Project[];
+    projectID?: string;
+    projectName?: string;
+    onconnection?: () => void;
+    onDirtyChange?: (dirty: boolean) => void;
     milestoneID?: string;
     onchange?: () => void | Promise<void>;
   } = $props();
@@ -37,7 +45,15 @@
     [],
   );
   let choices = $state<Record<string, string>>({}),
-    destination = $state(0);
+    destination = $state("");
+  let savedForm = $state("");
+  let currentForm = $derived(JSON.stringify({ config, statusRows }));
+  let dirty = $derived(Boolean(savedForm) && currentForm !== savedForm);
+  $effect(() => {
+    onDirtyChange(dirty);
+  });
+  const trackerPath = (suffix = "") =>
+    `/projects/${projectID}/tracker${suffix}`;
   const statuses = [
     "planned",
     "in_progress",
@@ -59,7 +75,7 @@
   });
   async function refresh(initial = false) {
     try {
-      const d = await api("/tracker");
+      const d = await api(trackerPath());
       const changed =
         data && JSON.stringify(data.records) !== JSON.stringify(d.records);
       data = d;
@@ -74,7 +90,17 @@
   onMount(() => {
     refresh(true);
     const id = setInterval(() => refresh(), 5000);
-    return () => clearInterval(id);
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (dirty) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
   });
   async function run(fn: () => Promise<void>) {
     busy = true;
@@ -90,7 +116,7 @@
     }
   }
   async function previewImport() {
-    preview = await api("/tracker/preview", "POST", {});
+    preview = await api(trackerPath("/preview"), "POST", {});
     previewStatusChoices = Object.fromEntries(
       (preview.unmapped_statuses || []).map((status: any) => [status.key, ""]),
     );
@@ -116,6 +142,10 @@
         write: config.write_statuses?.[String(local)] === remote,
       }),
     );
+    savedForm = JSON.stringify({ config, statusRows });
+    if (!destination)
+      destination =
+        config.selections.find((selection: any) => selection.queue)?.id || "";
   }
   function setWriteStatus(index: number, enabled: boolean) {
     const row = statusRows[index];
@@ -146,7 +176,7 @@
         next.write_statuses[row.local] = row.remote;
       }
     }
-    const saved = await api("/tracker/config", "PUT", next);
+    const saved = await api(trackerPath("/config"), "PUT", next);
     applyConfig(saved);
     preview = null;
     message = t.saved;
@@ -279,21 +309,31 @@
         {:else if config.enabled}
           <label
             >{t.destination}<select bind:value={destination}
-              >{#each config.selections as s, i}{#if s.queue}<option value={i}
-                    >{s.queue}</option
+              >{#each config.selections as s, i}{#if s.queue}<option
+                    value={s.id}>{s.queue}</option
                   >{/if}{/each}</select
             ></label
           >
           <button
             disabled={busy ||
-              !config.selections[destination]?.queue ||
+              !config.selections.some(
+                (s: any) => s.id === destination && s.queue,
+              ) ||
               pending.some((o: any) => o.kind === "publish")}
             onclick={() =>
               run(() =>
                 action(`/tracker/milestones/${milestoneID}/publish`, {
-                  selection: destination,
+                  selection_id: destination,
                 }),
               )}>{t.publish}</button
+          >
+        {/if}
+        {#if !record && pending.some((o: any) => o.kind === "publish")}
+          <button
+            disabled={busy}
+            onclick={() =>
+              run(() => action(`/tracker/milestones/${milestoneID}/unlink`))}
+            >{t.cancelPublication}</button
           >
         {/if}
         {#each pending as op}{#if op.error}<p role="alert">
@@ -301,34 +341,27 @@
             </p>{/if}{/each}
       {:else}
         <p>{t.intro}</p>
+        <p>
+          <strong
+            >{projectName ||
+              projects.find((p) => p.id === projectID)?.name}</strong
+          >
+        </p>
+        <p>
+          {t.sharedConnection}: {data.connection?.org_id || "—"} · {data
+            .connection?.org_header || "—"} · {data.connection?.auth || "—"}
+        </p>
+        <button onclick={onconnection}>{t.globalConnectionSettings}</button>
         <label
           ><input
             type="checkbox"
             bind:checked={config.enabled}
-          />{t.enabled}</label
+          />{t.projectEnabled}</label
         >
-        <label>{t.org}<input bind:value={config.org_id} /></label>
-        <label
-          >{t.orgType}<select bind:value={config.org_header}
-            ><option value="X-Org-ID">Yandex 360</option><option
-              value="X-Cloud-Org-ID">Yandex Identity Hub</option
-            ></select
-          ></label
-        >
-        <label
-          >{t.auth}<select bind:value={config.auth}
-            ><option>OAuth</option><option>Bearer</option></select
-          ></label
-        >
-        <p class="hint">{t.secret}</p>
-        <label
-          >{t.interval}<input
-            type="number"
-            min="30"
-            max="86400"
-            bind:value={config.poll_interval_seconds}
-          /></label
-        >
+        {#if !data.connection?.enabled}<p>{t.connectionDisabled}</p>{/if}
+        {#if data.warning}<p role="alert">
+            {trackerMessage(data.warning, lang)}
+          </p>{/if}
         <h3>{t.selections}</h3>
         <p class="hint">{t.queueHint}</p>
         {#each config.selections as s, i}
@@ -346,13 +379,6 @@
                 disabled={!!s.queue}
               /></label
             >
-            <label
-              >{t.project}<select bind:value={s.project_id}
-                ><option value="">{t.choose}</option
-                >{#each projects as p}<option value={p.id}>{p.name}</option
-                  >{/each}</select
-              ></label
-            >
             <button onclick={() => config.selections.splice(i, 1)}
               >{t.remove}</button
             >
@@ -361,9 +387,9 @@
         <button
           onclick={() =>
             config.selections.push({
+              id: crypto.randomUUID(),
               queue: "",
               query: "",
-              project_id: projects[0]?.id || "",
             })}>{t.addSelection}</button
         >
         <h3>{t.statuses}</h3>
@@ -483,15 +509,7 @@
         <div class="tracker-actions">
           <button disabled={busy} onclick={() => run(save)}>{t.save}</button>
           <button
-            disabled={busy}
-            onclick={() =>
-              run(async () => {
-                await action("/tracker/test");
-                message = t.connected;
-              })}>{t.test}</button
-          >
-          <button
-            disabled={busy || !data.config.enabled}
+            disabled={busy || !data.config.enabled || !data.connection?.enabled}
             onclick={() => run(previewImport)}>{t.preview}</button
           >
         </div>
@@ -591,7 +609,9 @@
                   0}
               onclick={() =>
                 run(async () => {
-                  await action("/tracker/import", { preview_id: preview.id });
+                  await action(trackerPath("/import"), {
+                    preview_id: preview.id,
+                  });
                   preview = null;
                   message = t.imported;
                 })}>{t.confirm}</button
@@ -619,16 +639,20 @@
       {/if}
       <div class="tracker-actions">
         <button
-          disabled={busy || !data.config.enabled || data.running}
+          disabled={busy ||
+            !data.config.enabled ||
+            !data.connection?.enabled ||
+            data.running}
           onclick={() =>
             run(async () => {
-              await action("/tracker/sync");
+              await action(trackerPath("/sync"));
               message = t.scheduled;
             })}>{t.sync}</button
         >
         <button
           disabled={busy}
-          onclick={() => run(() => action("/tracker/retry"))}>{t.retry}</button
+          onclick={() => run(() => action(trackerPath("/retry")))}
+          >{t.retry}</button
         >
       </div>
     {/if}

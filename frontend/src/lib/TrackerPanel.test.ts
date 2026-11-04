@@ -14,10 +14,7 @@ function state() {
   return {
     config: {
       enabled: false,
-      org_id: "",
-      org_header: "X-Org-ID",
-      auth: "OAuth",
-      poll_interval_seconds: 300,
+      revision: 0,
       selections: [],
       fields: {
         title: { field: "summary", writable: true, codec: "string" },
@@ -26,6 +23,12 @@ function state() {
       statuses: {},
       write_statuses: {},
       links: [],
+    },
+    connection: {
+      enabled: true,
+      org_id: "org",
+      org_header: "X-Org-ID",
+      auth: "OAuth",
     },
     records: [],
     outbox: [],
@@ -51,21 +54,23 @@ describe("Tracker UI", () => {
     data.last_error =
       "Queue selection contains issue key AP-270; use queue AP or search query Key: AP-270";
     const api = vi.fn(async (..._args: any[]) => structuredClone(data));
-    render(TrackerPanel, { props: { api, lang: "ru", projects } });
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", lang: "ru", projects },
+    });
     await screen.findByText(
       "AP-270 — ключ задачи. Укажите очередь AP или поисковый запрос Key: AP-270",
     );
   });
 
-  it("configures a connection, previews and confirms import without browser credentials", async () => {
+  it("saves selections only to the containing project and confirms its preview", async () => {
     const data = state();
     const change = vi.fn();
     const api = vi.fn(async (path: string, method = "GET", body?: any) => {
-      if (path === "/tracker/config") {
+      if (path === "/projects/p1/tracker/config") {
         data.config = JSON.parse(JSON.stringify(body));
         return body;
       }
-      if (path === "/tracker/preview")
+      if (path === "/projects/p1/tracker/preview")
         return {
           id: "preview1",
           projects: [],
@@ -76,42 +81,43 @@ describe("Tracker UI", () => {
             },
           ],
           links: [],
-          skipped: [
-            {
-              issue_key: "CORE-2",
-              reason: "Use ISO YYYY-MM-DD calendar dates",
-            },
-          ],
+          skipped: [],
           warnings: [],
         };
       return structuredClone(data);
     });
     render(TrackerPanel, {
-      props: { api, lang: "en", projects, onchange: change },
+      props: {
+        api,
+        lang: "en",
+        projects,
+        projectID: "p1",
+        projectName: "Core",
+        onchange: change,
+      },
     });
-    await fireEvent.input(await screen.findByLabelText("Organization ID"), {
-      target: { value: "org" },
-    });
-    await fireEvent.click(screen.getByLabelText("Enable integration"));
+    await fireEvent.click(
+      await screen.findByLabelText("Enable this project's synchronization"),
+    );
     await fireEvent.click(
       screen.getByRole("button", { name: "Add selection" }),
     );
     await fireEvent.input(screen.getByLabelText("Queue key"), {
       target: { value: "CORE" },
     });
+    expect(screen.queryByLabelText("Organization ID")).toBeNull();
+    expect(screen.queryByLabelText("Roadmap project")).toBeNull();
     await fireEvent.click(
       screen.getByRole("button", { name: "Save Tracker settings" }),
     );
-    await waitFor(() =>
-      expect(api).toHaveBeenCalledWith(
-        "/tracker/config",
-        "PUT",
-        expect.objectContaining({
-          org_id: "org",
-          enabled: true,
-          selections: [{ queue: "CORE", query: "", project_id: "p1" }],
-        }),
-      ),
+    await screen.findByText("Tracker settings saved.");
+    expect(api).toHaveBeenCalledWith(
+      "/projects/p1/tracker/config",
+      "PUT",
+      expect.objectContaining({
+        enabled: true,
+        selections: [{ id: expect.any(String), queue: "CORE", query: "" }],
+      }),
     );
     await waitFor(() =>
       expect(
@@ -124,7 +130,9 @@ describe("Tracker UI", () => {
       screen.getByRole("button", { name: "Preview import" }),
     );
     await screen.findByText("CORE-1: Core V2 — 2027-01-02");
-    expect(api.mock.calls.some((c) => c[0] === "/tracker/import")).toBe(false);
+    expect(
+      api.mock.calls.some((c) => c[0] === "/projects/p1/tracker/import"),
+    ).toBe(false);
     await waitFor(() =>
       expect(
         screen
@@ -136,12 +144,11 @@ describe("Tracker UI", () => {
       screen.getByRole("button", { name: "Confirm import" }),
     );
     await waitFor(() =>
-      expect(api).toHaveBeenCalledWith("/tracker/import", "POST", {
+      expect(api).toHaveBeenCalledWith("/projects/p1/tracker/import", "POST", {
         preview_id: "preview1",
       }),
     );
     expect(change).toHaveBeenCalled();
-    expect(screen.queryByLabelText(/token/i)).toBeNull();
   });
   it("maps discovered Tracker statuses explicitly and reruns preview", async () => {
     const data = state();
@@ -149,11 +156,11 @@ describe("Tracker UI", () => {
     data.config.fields.planned_date.field = "duedatecustomer";
     let previews = 0;
     const api = vi.fn(async (path: string, method = "GET", body?: any) => {
-      if (path === "/tracker/config") {
+      if (path === "/projects/p1/tracker/config") {
         data.config = JSON.parse(JSON.stringify(body));
         return data.config;
       }
-      if (path === "/tracker/preview") {
+      if (path === "/projects/p1/tracker/preview") {
         previews++;
         return previews === 1
           ? {
@@ -194,7 +201,9 @@ describe("Tracker UI", () => {
       }
       return structuredClone(data);
     });
-    render(TrackerPanel, { props: { api, lang: "ru", projects } });
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", lang: "ru", projects },
+    });
     const preview = await screen.findByRole("button", {
       name: "Предпросмотр импорта",
     });
@@ -219,7 +228,7 @@ describe("Tracker UI", () => {
     await fireEvent.click(save);
     await screen.findByText("AP-270: Epic — 2027-04-12");
     expect(api).toHaveBeenCalledWith(
-      "/tracker/config",
+      "/projects/p1/tracker/config",
       "PUT",
       expect.objectContaining({
         statuses: { inProgress: "in_progress" },
@@ -247,14 +256,14 @@ describe("Tracker UI", () => {
     };
     data.config.write_statuses = { in_progress: "In Progress" };
     const api = vi.fn(async (path: string, method = "GET", body?: any) => {
-      if (path === "/tracker/config") {
+      if (path === "/projects/p1/tracker/config") {
         data.config = JSON.parse(JSON.stringify(body));
         return structuredClone(data.config);
       }
       return structuredClone(data);
     });
     const first = render(TrackerPanel, {
-      props: { api, lang: "en", projects },
+      props: { api, projectID: "p1", lang: "en", projects },
     });
     await screen.findByLabelText("Use for outgoing changes: In Progress");
     const keys = screen.getAllByLabelText("Tracker status key");
@@ -299,7 +308,9 @@ describe("Tracker UI", () => {
     expect(data.config.write_statuses).toEqual({ in_progress: "inProgress" });
     expect(data.config.fields.status.writable).toBe(true);
     first.unmount();
-    render(TrackerPanel, { props: { api, lang: "en", projects } });
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", lang: "en", projects },
+    });
     const saved = await screen.findByLabelText(
       "Use for outgoing changes: inProgress",
     );
@@ -323,6 +334,39 @@ describe("Tracker UI", () => {
       ).checked,
     ).toBe(true);
   });
+  it("keeps unsaved custom date edits while project health refreshes", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const data = state();
+      const dirty = vi.fn();
+      const api = vi.fn(async () => structuredClone(data));
+      render(TrackerPanel, {
+        props: {
+          api,
+          projectID: "p1",
+          projectName: "Core",
+          lang: "en",
+          onDirtyChange: dirty,
+        },
+      });
+      await screen.findByRole("button", {
+        name: "Field and dependency mappings",
+      });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Field and dependency mappings" }),
+      );
+      const date = within(
+        screen.getByRole("group", { name: "Planned date" }),
+      ).getByLabelText("Tracker field ID");
+      await fireEvent.input(date, { target: { value: "duedatecustomer" } });
+      data.config.fields.planned_date.field = "remote edit";
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((date as HTMLInputElement).value).toBe("duedatecustomer");
+      await waitFor(() => expect(dirty).toHaveBeenLastCalledWith(true));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("shows separate sync conflicts and sends explicit per-field choices", async () => {
     const data = state();
     data.config.enabled = true;
@@ -342,7 +386,9 @@ describe("Tracker UI", () => {
       },
     ];
     const api = vi.fn(async (..._args: any[]) => structuredClone(data));
-    render(TrackerPanel, { props: { api, lang: "en", milestoneID: "m1" } });
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", lang: "en", milestoneID: "m1" },
+    });
     await screen.findByRole("heading", { name: "Synchronization conflict" });
     const resolve = screen.getByRole("button", {
       name: "Resolve selected values",
@@ -360,12 +406,48 @@ describe("Tracker UI", () => {
       ),
     );
   });
+  it("allows cancelling a retained publication while project synchronization is disabled", async () => {
+    const data = state();
+    data.outbox = [
+      {
+        local_id: "m1",
+        kind: "publish",
+        error: "Pending publication destination requires review",
+        attempts: 2,
+      },
+    ];
+    const api = vi.fn(async (path: string, method = "GET", _body?: any) => {
+      if (path === "/tracker/milestones/m1/unlink" && method === "POST")
+        data.outbox = [];
+      return structuredClone(data);
+    });
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", milestoneID: "m1", lang: "en" },
+    });
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Cancel pending publication" }),
+    );
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/tracker/milestones/m1/unlink",
+        "POST",
+        {},
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Cancel pending publication" }),
+      ).toBeNull(),
+    );
+  });
   it("publishes only through the explicit destination action and localizes controls", async () => {
     const data = state();
     data.config.enabled = true;
-    data.config.selections = [{ queue: "CORE", project_id: "p1" }];
+    data.config.selections = [{ id: "sel-core", queue: "CORE", query: "" }];
     const api = vi.fn(async (..._args: any[]) => structuredClone(data));
-    render(TrackerPanel, { props: { api, lang: "ru", milestoneID: "m1" } });
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", lang: "ru", milestoneID: "m1" },
+    });
     const publish = await screen.findByRole("button", {
       name: "Опубликовать в Трекере",
     });
@@ -375,7 +457,7 @@ describe("Tracker UI", () => {
       expect(api).toHaveBeenCalledWith(
         "/tracker/milestones/m1/publish",
         "POST",
-        { selection: 0 },
+        { selection_id: "sel-core" },
       ),
     );
   });

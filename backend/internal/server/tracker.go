@@ -20,6 +20,7 @@ type TrackerField struct {
 	Codec    string `json:"codec"`
 }
 type TrackerSelection struct {
+	ID        string   `json:"id,omitempty"`
 	Queue     string   `json:"queue"`
 	Query     string   `json:"query"`
 	ProjectID string   `json:"project_id"`
@@ -31,7 +32,12 @@ type TrackerLinkMapping struct {
 	LocalType    string `json:"local_type"`
 	Relationship string `json:"relationship"`
 }
+
+// TrackerConfig is an internal, resolved execution context (and legacy migration format).
+// Public APIs accept the separate connection/project types in tracker_project.go.
 type TrackerConfig struct {
+	ProjectID     string                  `json:"-"`
+	Revision      int                     `json:"revision,omitempty"`
 	Enabled       bool                    `json:"enabled"`
 	OrgID         string                  `json:"org_id"`
 	OrgHeader     string                  `json:"org_header"`
@@ -44,6 +50,7 @@ type TrackerConfig struct {
 	Links         []TrackerLinkMapping    `json:"links"`
 }
 type TrackerRecord struct {
+	ProjectID    string                     `json:"project_id"`
 	ExternalID   string                     `json:"external_id"`
 	ConnectionID string                     `json:"connection_id"`
 	Key          string                     `json:"issue_key"`
@@ -71,6 +78,7 @@ type TrackerNotice struct {
 	Key     string   `json:"issue_key"`
 	Reason  string   `json:"reason"`
 	Reasons []string `json:"reasons,omitempty"`
+	EdgeKey string   `json:"edge_key,omitempty"`
 }
 type TrackerUnmappedStatus struct {
 	Key   string `json:"key"`
@@ -78,6 +86,7 @@ type TrackerUnmappedStatus struct {
 	Count int    `json:"count"`
 }
 type TrackerPreview struct {
+	ProjectID        string                  `json:"project_id"`
 	UnmappedStatuses []TrackerUnmappedStatus `json:"unmapped_statuses"`
 	ID               string                  `json:"id"`
 	Projects         []Project               `json:"projects"`
@@ -91,19 +100,11 @@ func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
 func defaultTrackerConfig() TrackerConfig {
 	return TrackerConfig{OrgHeader: "X-Org-ID", Auth: "OAuth", Interval: 300, Selections: []TrackerSelection{}, Fields: map[string]TrackerField{"title": {"summary", true, "string"}, "description": {"description", true, "string"}, "planned_date": {"dueDate", true, "date"}, "status": {"status", false, "status"}}, Statuses: map[string]string{}, WriteStatuses: map[string]string{}, Links: []TrackerLinkMapping{}}
 }
+
+// Shared settings contain no project mappings, including when no project exists.
 func (s *Server) trackerConfig() (TrackerConfig, error) {
-	c := defaultTrackerConfig()
-	var raw string
-	e := s.db.QueryRow("SELECT config FROM tracker_connection WHERE id='tracker'").Scan(&raw)
-	if e == sql.ErrNoRows {
-		return c, nil
-	}
-	if e != nil {
-		return c, e
-	}
-	c = TrackerConfig{}
-	e = json.Unmarshal([]byte(raw), &c)
-	return c, e
+	g, e := s.connectionConfig()
+	return TrackerConfig{Enabled: g.Enabled, OrgID: g.OrgID, OrgHeader: g.OrgHeader, Auth: g.Auth, Interval: g.Interval, Revision: g.Revision}, e
 }
 
 var trackerIssueKeyRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*)-[0-9]+$`)
@@ -189,7 +190,7 @@ func validateTracker(c TrackerConfig) error {
 }
 func (s *Server) trackerRecords() ([]TrackerRecord, error) {
 	out := []TrackerRecord{}
-	rows, e := s.db.Query("SELECT external_id,connection_id,issue_key,COALESCE(local_id,''),url,version,baseline,state,error,conflicts FROM tracker_records ORDER BY issue_key")
+	rows, e := s.db.Query("SELECT external_id,connection_id,issue_key,COALESCE(local_id,''),url,version,baseline,state,error,conflicts,COALESCE(project_id,'') FROM tracker_records ORDER BY issue_key")
 	if e != nil {
 		return out, e
 	}
@@ -197,7 +198,7 @@ func (s *Server) trackerRecords() ([]TrackerRecord, error) {
 	for rows.Next() {
 		var x TrackerRecord
 		var b, c string
-		if e = rows.Scan(&x.ExternalID, &x.ConnectionID, &x.Key, &x.LocalID, &x.URL, &x.Version, &b, &x.State, &x.Error, &c); e != nil {
+		if e = rows.Scan(&x.ExternalID, &x.ConnectionID, &x.Key, &x.LocalID, &x.URL, &x.Version, &b, &x.State, &x.Error, &c, &x.ProjectID); e != nil {
 			return out, e
 		}
 		json.Unmarshal([]byte(b), &x.Baseline)
@@ -323,18 +324,50 @@ func updateMilestone(tx *sql.Tx, m Milestone) error {
 	return e
 }
 func saveRecord(tx *sql.Tx, x TrackerRecord) error {
+	if x.LocalID != "" {
+		if e := tx.QueryRow("SELECT project_id FROM milestones WHERE id=?", x.LocalID).Scan(&x.ProjectID); e != nil {
+			return e
+		}
+	}
 	var local any = x.LocalID
 	if x.LocalID == "" {
 		local = nil
 	}
-	_, e := tx.Exec(`INSERT INTO tracker_records(external_id,connection_id,issue_key,local_id,url,version,baseline,state,error,conflicts) VALUES(?,'tracker',?,?,?,?,?,?,?,?) ON CONFLICT(external_id) DO UPDATE SET issue_key=excluded.issue_key,local_id=excluded.local_id,url=excluded.url,version=excluded.version,baseline=excluded.baseline,state=excluded.state,error=excluded.error,conflicts=excluded.conflicts`, x.ExternalID, x.Key, local, x.URL, x.Version, jsonText(x.Baseline), x.State, x.Error, jsonText(x.Conflicts))
+	res, e := tx.Exec(`INSERT INTO tracker_records(external_id,connection_id,issue_key,local_id,url,version,baseline,state,error,conflicts,project_id) VALUES(?,'tracker',?,?,?,?,?,?,?,?,?) ON CONFLICT(external_id) DO UPDATE SET issue_key=excluded.issue_key,local_id=excluded.local_id,url=excluded.url,version=excluded.version,baseline=excluded.baseline,state=excluded.state,error=excluded.error,conflicts=excluded.conflicts,project_id=excluded.project_id WHERE tracker_records.local_id IS excluded.local_id AND tracker_records.project_id IS excluded.project_id`, x.ExternalID, x.Key, local, x.URL, x.Version, jsonText(x.Baseline), x.State, x.Error, jsonText(x.Conflicts), nullableProject(x.ProjectID))
+	if e == nil {
+		if n, _ := res.RowsAffected(); n != 1 {
+			return fmt.Errorf("External issue is already linked to another milestone or excluded")
+		}
+	}
 	return e
+}
+func nullableProject(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
 }
 func enqueue(tx *sql.Tx, id, kind, payload string) error {
-	_, e := tx.Exec("INSERT INTO tracker_outbox(id,local_id,kind,payload) VALUES(?,?,?,?) ON CONFLICT(local_id,kind) DO NOTHING", token(), id, kind, payload)
+	var project, raw string
+	if e := tx.QueryRow("SELECT project_id FROM milestones WHERE id=?", id).Scan(&project); e != nil {
+		return e
+	}
+	context := ""
+	e := tx.QueryRow("SELECT config FROM tracker_project_config WHERE project_id=?", project).Scan(&raw)
+	if e != nil && e != sql.ErrNoRows {
+		return e
+	}
+	if e == nil {
+		var p ProjectTrackerConfig
+		if e = json.Unmarshal([]byte(raw), &p); e != nil {
+			return e
+		}
+		context = mappingHash(p)
+	}
+	_, e = tx.Exec("INSERT INTO tracker_outbox(id,local_id,kind,payload,project_id,context_hash) VALUES(?,?,?,?,?,?) ON CONFLICT(local_id,kind) DO NOTHING", token(), id, kind, payload, project, context)
 	return e
 }
-func (s *Server) fingerprint() (string, error) {
+func (s *Server) fingerprint(projectID string) (string, error) {
 	g, e := s.graph()
 	if e != nil {
 		return "", e
@@ -346,7 +379,7 @@ func (s *Server) fingerprint() (string, error) {
 	for i := range g.Projects {
 		g.Projects[i].UpdatedAt = ""
 	}
-	c, e := s.trackerConfig()
+	c, e := s.resolveTrackerConfig(projectID)
 	if e != nil {
 		return "", e
 	}
@@ -354,7 +387,22 @@ func (s *Server) fingerprint() (string, error) {
 	if e != nil {
 		return "", e
 	}
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(jsonText([]any{g, c, records})))), nil
+	configs := []any{}
+	rows, e := s.db.Query("SELECT project_id,config,revision FROM tracker_project_config ORDER BY project_id")
+	if e != nil {
+		return "", e
+	}
+	for rows.Next() {
+		var id, raw string
+		var revision int
+		if e = rows.Scan(&id, &raw, &revision); e != nil {
+			rows.Close()
+			return "", e
+		}
+		configs = append(configs, []any{id, raw, revision})
+	}
+	rows.Close()
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(jsonText([]any{g, c, records, configs})))), nil
 }
 func checkEdges(g Graph, ds []Dependency) error {
 	for _, d := range ds {
@@ -393,7 +441,7 @@ func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPrevi
 			return TrackerPreview{}, e
 		}
 	}
-	p := TrackerPreview{ID: token(), Projects: []Project{}, Items: []TrackerPreviewItem{}, Links: []Dependency{}, Skipped: []TrackerNotice{}, Warnings: []TrackerNotice{}, UnmappedStatuses: []TrackerUnmappedStatus{}}
+	p := TrackerPreview{ProjectID: c.ProjectID, ID: token(), Projects: []Project{}, Items: []TrackerPreviewItem{}, Links: []Dependency{}, Skipped: []TrackerNotice{}, Warnings: []TrackerNotice{}, UnmappedStatuses: []TrackerUnmappedStatus{}}
 	g, e := s.graph()
 	if e != nil {
 		return p, e
@@ -458,6 +506,10 @@ func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPrevi
 			}
 			seen[id] = pid
 			if x, ok := known[id]; ok {
+				if x.ProjectID != "" && x.ProjectID != c.ProjectID {
+					p.Skipped = append(p.Skipped, TrackerNotice{Key: key, Reason: "Issue is already linked to another Roadmap project"})
+					continue
+				}
 				if x.State != "unlinked" && x.LocalID != "" {
 					locals[id] = x.LocalID
 					issues[id] = v
@@ -509,6 +561,10 @@ func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPrevi
 		p.UnmappedStatuses = append(p.UnmappedStatuses, *status)
 	}
 	sort.Slice(p.UnmappedStatuses, func(i, j int) bool { return p.UnmappedStatuses[i].Key < p.UnmappedStatuses[j].Key })
+	locals, e = s.eligibleTrackerLocals(c, locals)
+	if e != nil {
+		return p, e
+	}
 	edges, warnings, e := s.fetchEdges(ctx, c, locals)
 	if e != nil {
 		return p, e
@@ -558,11 +614,11 @@ func (s *Server) applyPreview(p TrackerPreview) error {
 		if _, e = tx.Exec("INSERT OR IGNORE INTO dependencies VALUES(?,?,?,?,?)", token(), d.PrerequisiteID, d.DependentID, d.Type, now()); e != nil {
 			return e
 		}
-		if _, e = tx.Exec("INSERT INTO tracker_edges VALUES(?,1) ON CONFLICT(edge_key) DO UPDATE SET baseline=1", edgeKey(d)); e != nil {
+		if _, e = tx.Exec("INSERT INTO tracker_edges(edge_key,baseline) VALUES(?,1) ON CONFLICT(edge_key) DO UPDATE SET baseline=1", edgeKey(d)); e != nil {
 			return e
 		}
 	}
-	if _, e = tx.Exec("DELETE FROM tracker_previews"); e != nil {
+	if _, e = tx.Exec("DELETE FROM tracker_previews WHERE project_id=?", p.ProjectID); e != nil {
 		return e
 	}
 	return tx.Commit()

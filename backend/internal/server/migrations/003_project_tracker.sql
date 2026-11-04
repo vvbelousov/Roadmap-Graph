@@ -1,0 +1,18 @@
+CREATE TABLE tracker_project_config(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,config TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,last_success TEXT NOT NULL DEFAULT '',last_error TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '');
+ALTER TABLE tracker_connection ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracker_connection ADD COLUMN migration_warning TEXT NOT NULL DEFAULT '';
+ALTER TABLE tracker_records ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
+ALTER TABLE tracker_outbox ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE CASCADE;
+ALTER TABLE tracker_outbox ADD COLUMN selection_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tracker_outbox ADD COLUMN context_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE tracker_previews ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE CASCADE;
+ALTER TABLE tracker_edges ADD COLUMN owner_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
+ALTER TABLE tracker_edges ADD COLUMN error TEXT NOT NULL DEFAULT '';
+CREATE TABLE tracker_legacy_config(id TEXT PRIMARY KEY,config TEXT NOT NULL);
+UPDATE tracker_records SET project_id=(SELECT project_id FROM milestones WHERE milestones.id=tracker_records.local_id);
+UPDATE tracker_outbox SET project_id=(SELECT project_id FROM milestones WHERE milestones.id=tracker_outbox.local_id);
+UPDATE tracker_previews SET expires=0;
+CREATE INDEX tracker_records_project ON tracker_records(project_id);
+CREATE INDEX tracker_outbox_project ON tracker_outbox(project_id);
+CREATE INDEX tracker_previews_project ON tracker_previews(project_id);
+UPDATE tracker_edges SET owner_project_id=(SELECT project_id FROM milestones WHERE id=substr(edge_key,1,instr(edge_key,'|')-1));
