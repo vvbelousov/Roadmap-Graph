@@ -1,0 +1,114 @@
+# Yandex Tracker synchronization
+
+The integration is optional and disabled by default. It uses one organization and the existing Go process and SQLite database. Local projects, milestones and simulations work without a connection. No production fixture server, external worker, webhook or additional database is involved.
+
+## Connect
+
+1. Obtain an OAuth token with `tracker:read` and `tracker:write` permissions for a dedicated account that can access the selected queues. Alternatively use an IAM token (`Bearer`) for Yandex Identity Hub; the operator must renew it before expiry. See [official API access](https://yandex.ru/support/tracker/en/api/access).
+2. Provide `ROADMAP_TRACKER_TOKEN` in the backend environment (Docker Compose passes it through). Restart the backend after replacing it. The token is never stored in SQLite, included in an API response, or logged. There is no token input in the browser.
+3. Open **Settings → Yandex Tracker**. Set the organization ID, Yandex 360 (`X-Org-ID`) or Yandex Identity Hub (`X-Cloud-Org-ID`), OAuth or Bearer, polling interval (30–86400 seconds), and shared enablement. Save and test the connection. This works before creating any projects; the test calls only `GET /v3/myself`.
+4. Create a Roadmap project normally. Open its **Project settings** from the sidebar's settings button, the Projects page, or the global connection's project list. This spacious page contains the project's own Tracker enablement, selections, fields, statuses, outgoing status targets, and dependency mappings. Shared connection settings are shown read-only with a link back to global settings.
+5. Add queue selections or search queries. Every selection belongs to this project and receives a stable ID; there is no destination-project selector. Configure explicit status mappings, date fields and permissions. Enable both an outgoing status target and the Status field's write permission to upload local status changes. Save and enable the project.
+6. **Preview import** in this project, inspect skipped issues, dates and dependencies, then **Confirm import**. Preview makes no remote mutations. Confirmation persists the snapshot locally. A changed graph/configuration, wrong-project token or expired preview requires previewing again. Already bound/excluded external identities are never reassigned by an overlapping selection. New Tracker issues require a new confirmed import.
+7. **Synchronize** in project settings reconciles that project; the global action and regular poller visit all enabled projects. Health refreshes every five seconds. Milestone details show publication, exclusion and per-field conflict resolution using that milestone's owning project configuration.
+
+Global settings contain only the shared connection. Each project's saved JSON is independent; a newly created project starts disabled with fresh defaults and never inherits another project's mappings. Both shared and project enablement must be on for synchronization. Unsaved edits survive health refreshes; navigation warns before discarding them. A stale browser save is rejected instead of overwriting a newer revision.
+
+### Two projects with different mappings
+
+For Project A, add queue `AP` (or a query selecting its Epics), map Planned date to `duedatecustomer`, map remote `open` to local `planned`, and choose its outgoing status target. For Project B, add its own queue, map Planned date to `dueDate`, and map `open` to `in_progress` if that matches its workflow. Give B different field write permissions if needed. Save, preview and confirm separately in each project's settings. The same remote status key can mean different things in A and B; changing A never edits B's configuration.
+
+See [shared JSON](tracker-config.example.json) and [project JSON](tracker-project-config.example.json). Fetch the current revision before every API save. Selection IDs are stable within the project and are used for publication; reordering selections does not retarget pending publications.
+
+## Troubleshooting HTTP 422
+
+Tracker returns 422 when request data fails validation. Diagnostics include the HTTP method, API path and validation field IDs when available. Response messages, request bodies, authentication headers and query strings are never included.
+
+A queue key is `AP`, while `AP-270` identifies one issue. Do not put an issue key in **Queue key**. For one issue, clear the queue input and set **Search query** to `Key: AP-270`; for a whole queue, use `AP`. Save settings, configure explicit status mappings, then preview and confirm import. Synchronize reconciles already linked milestones; it does not replace the initial import. Incorrect previously saved selections are rejected locally with a correction hint before any Tracker request is sent.
+
+See the official [queue key definition](https://www.yandex.ru/support/tracker/ru/manager/edit-queue-general) and [issue-key search syntax](https://yandex.ru/support/tracker/en/user/query-filter).
+
+## Resolve statuses in import preview
+
+Preview lists unknown Tracker statuses by their actual display names and keys, with the number of affected issues. Select a Roadmap status for every listed status and click **Save status mappings and preview again**. Choices are initially empty, and new mappings do not enable outgoing status transitions automatically. The selected planned-date field (including custom fields such as `duedatecustomer`) is preserved when saving status mappings.
+
+Skipped issues can show multiple blocking reasons together, such as an unmapped status and an empty planned-date field. Changing the planned-date mapping does not map statuses. Completed milestones additionally require an actual completion date. Confirmation is disabled when the preview contains nothing to import. No task type, including Epic, is automatically treated as completed.
+
+## Mapping and ownership
+
+Mapped, writable fields have shared ownership and use three-way reconciliation. A field changed on one side propagates; identical changes converge; independent field changes merge. Different values for the same field create a synchronization conflict with baseline, Roadmap and Tracker values. Disputed fields are never silently overwritten. Choose a value for every conflict in milestone details, then synchronize. A further remote change before the upload produces a new conflict. While any field conflict remains, that issue's outgoing changes and dependency synchronization are paused.
+
+Unmapped fields belong to Roadmap and remain local. Mapped fields without write permission are read from Tracker and cannot be changed through the local milestone PATCH API. Unlink first to edit them locally. Neither local creation nor simulation preview publishes anything; only applying a scenario calls the normal milestone PATCH API and queues a change. Ordinary local milestones remain unpublished until an explicit publication request selects a configured queue destination.
+
+| Local field | Tracker mapping | Format / limits |
+|---|---|---|
+| Title | `summary` (required) | `string`, 200 bytes maximum locally |
+| Description | `description` or configured field | `string` |
+| Planned date | `dueDate` or configured date field (required) | `date`, exactly YYYY-MM-DD |
+| Completion date | configured date-only field | `date`; completed milestones require a value |
+| Status | `status` | `status`, explicit remote key → local status mappings; optional local status → remote key for writes |
+| Responsible person | `assignee` or a user field | `id`, stores the user's stable ID rather than display name |
+| Version | `fixVersions` or configured version field | `single_id`, zero or one object ID; multiple values are rejected |
+
+Date-time fields such as `resolvedAt` are not accepted as date-only fields: configure a date-only completion field. Undated issues are skipped with a reason; dates are never invented. Status transitions requiring additional workflow form fields are outside this version; failures remain visible. Field formats are an explicit operator contract, not automatic schema inference. Read-only permission failures are visible and recoverable through Retry after correcting access.
+
+Within the owning project, field IDs/formats and link mappings cannot change while linked milestones exist. Unlink before replacing those mappings. Any mapping-context change is blocked while outgoing operations remain pending, so queued work cannot be reinterpreted under new mappings. Finish the operation or explicitly unlink/cancel it first. Pending publication destinations cannot be removed or assigned a different queue; reordering them is safe. With no pending operations, status keys, status meanings, write permissions and outgoing status targets can be corrected after import. Bindings or operations in Project A do not block safe changes in Project B. The next synchronization compares the newly mapped remote status with the saved local baseline; competing local status edits become conflicts. Selecting an outgoing destination clears other outgoing choices for the same Roadmap status, because each Roadmap status has exactly one destination at most. Organization identity cannot change after importing any issue. Exclusion is permanent for an external issue ID in this initial version, including after its local milestone is deleted. Switching organizations with retained tombstones is not supported; this version is for one organization per database.
+
+## Dependencies
+
+Roadmap arrows always mean **prerequisite → dependent**. Configure the Tracker `type.id`, the `direction` for which the queried issue is the prerequisite, local `requires` or `related_to`, and the outgoing Tracker relationship relative to the prerequisite. For example, after verifying your Tracker link type, a dependency mapping normally uses outward for the blocking issue and `is dependent by` for outgoing creation. The reverse response from the dependent has inward direction and is deduplicated. Do not infer link semantics from localized labels.
+
+Only configured link types between linked, selected, synchronized milestones are managed. Each local relationship type has at most one Tracker link mapping to prevent ambiguous write/delete behavior. Outside-scope links are listed in preview and are never changed. Unconfigured links remain untouched. `related_to` is undirected locally for deduplication and never participates in cycle checks. Self-links and the entire incoming hard-edge set are checked before local link changes; an invalid cycle produces a specific error and no partial incoming edge set. Dependency scheduling warnings and field synchronization conflicts are separate UI categories.
+
+Cross-project links use both endpoint configurations. For `requires`, the prerequisite project's mapping owns reconciliation and outgoing operations. For undirected `related_to`, the endpoint with the lexicographically smaller stable Tracker issue ID owns them. Identity-based keys deduplicate inverse responses; a run for the dependent cannot undo the prerequisite owner's relationship. Both endpoint mappings must agree on Tracker type, direction, local semantics and outgoing relationship. A disagreement reports a configuration conflict and blocks unsafe link writes.
+
+An endpoint outside the current project's iteration is retained. If either endpoint is disabled, unconfigured, outside its selection, or in a field conflict, the relationship and its baseline remain intact and synchronization is paused with a reason. Paused dependency operations do not exhaust retry attempts. Local-only relationships and unrelated Tracker link types are untouched. Cycle validation considers the complete local graph across all projects.
+
+The link baseline records presence/absence. Local creation/removal is persisted with a durable link operation in the same transaction. Remote-only presence changes are imported; local-only changes are uploaded. Link retries inspect current links first, avoiding duplicates after a lost response. Tracker link endpoints do not document an atomic version precondition: a concurrent edit between the read and write can race. The next run reconciles the result; there is no distributed transaction or claim of atomic conflict protection for links/status transitions.
+
+## Persistence, retries and partial results
+
+Schema migration 2 adds `tracker_connection`, `tracker_records`, `tracker_outbox`, `tracker_edges`, connection-wide `tracker_retry`, and expiring `tracker_previews`. External IDs anchor identity; keys and URLs can change without duplicating milestones. The records persist connection ID, local ID, issue URL, external version, last acknowledged mapped values, state, errors and per-field conflicts. Local edit + outgoing intent commit together. No SQLite transaction stays open during HTTP calls.
+
+### Upgrade from global mappings
+
+Migration 3 runs once, transactionally after migration 2, with no HTTP calls. It retains shared organization/authentication/enablement/polling settings, groups legacy selections by existing `project_id`, assigns deterministic stable selection IDs in the original order, and stores independent copies of field/status/link mappings in each affected project. External identities, baselines, conflicts, exclusions, dependency state, outbox operation IDs, retry counts/backoff and publication unique IDs are retained. Pending operations receive an owning project and mapping-context hash; publication destinations are recovered only when exactly one selection matches their saved queue.
+
+Projects with linked milestones or operations but no legacy selection receive disabled settings and a review warning. Ambiguous destinations are preserved and paused rather than guessed. A retained pending publication can be cancelled from its milestone details even while the project is disabled; this does not delete an already created remote issue. Original global JSON is archived in `tracker_legacy_config`; global and project health expose migration warnings. Legacy previews expire and require a new project-scoped preview. Restart does not repeat or overwrite the migration. Legacy global preview/import routes return 410, and global saves reject mapping fields.
+
+### Disable, move and delete
+
+Disabling a project preserves its settings, milestones, bindings, baselines, conflicts and outbox. No project work executes until it is enabled again. Other projects continue, while cross-project relationships involving the disabled endpoint pause. An invalid project records its own error without stopping healthy projects; authentication failures and connection throttling remain shared.
+
+Moving a linked milestone or a milestone with pending Tracker work to another project is rejected. Unlink explicitly before a local move; a new binding is never inferred from the destination's mappings. Deleting a project removes its configuration, previews and queued operations, and retains external-identity exclusions. It does not delete Tracker issues, and no orphaned operation can later publish for the deleted project.
+
+PATCH uses the documented `?version=N` concurrency control; HTTP 409 leaves the baseline intact and forces reconciliation. Publication persists a random unique identifier **before** HTTP creation. Recovery searches by that identifier and sends the same Tracker `unique` value on subsequent attempts, so Tracker rejects duplicate creation even if search indexing lags. A 409 remains recoverable; it never triggers a new unique identifier. Once creation is observed, the issue is linked in a local transaction. Publication and subsequent status/field updates can succeed separately and are shown as pending/error until reconciled.
+
+Reads/searches have at most four immediate attempts with exponential backoff, jitter and Retry-After handling. Field/publication/link outbox operations pause after eight failed attempts until the user resets them; retry times survive restarts. Long Retry-After delays are persisted for the connection and suppress subsequent runs until due or explicitly reset. Mutation transport errors are not blindly replayed. The next operation re-reads Tracker before writing. Requests are sequential and paced below the documented search limit (one request at a time, at most approximately 4.5 requests/second). There is a 20-second HTTP timeout, ten-minute run deadline, and twelve-minute SQLite connection lease. A crashed process's lease expires before recovery can start. The intended deployment remains **one backend process per SQLite database**; the lease also rejects overlapping synchronization runs.
+
+The existing server write mutex serializes polling/import/mutations, so a long synchronization can delay other graph writes. Reads remain available between short database transactions. Search selections above 10,000 issues are explicitly rejected; narrow or split selections. Page pagination is not a remote snapshot and a later poll may be needed after issues change during pagination. Safe same-origin Link pagination is supported; redirects are refused and authenticated requests only use `https://api.tracker.yandex.net`. Neither API nor environment settings can override this destination.
+
+Each issue commits separately; a later failure never rolls back already completed remote writes. Errors remain visible in records, connection status and outbox entries. Project Retry resets only that project's failed outgoing operations; the global retry action resets only the shared connection cooldown. Synchronize starts reconciliation. Unresolved conflicts can prevent the project's last-success time advancing. Missing search results are fetched by stable ID: readable issues become `out_of_scope` (retained; uploads paused), 403 is `lost_access`, 404 is `missing_or_inaccessible`, and only an explicit 410 is labeled `deleted`. Tracker commonly cannot distinguish deletion from invisibility through 404; the integration never guesses. All states retain the local milestone. Local deletion unlinks/excludes the issue; there is no remote issue DELETE operation.
+
+## Official API references reviewed
+
+- [Authentication and organization headers](https://yandex.ru/support/tracker/en/api/access)
+- [Issue search and pagination](https://www.yandex.ru/support/tracker/en/api/issues/search-issues)
+- [Issue fields and local field IDs](https://yandex.ru/support/tracker/en/api/issues/fields)
+- [Version-checked PATCH](https://www.yandex.ru/support/tracker/en/api/issues/patch-issue)
+- [Create issue and unique identifier](https://yandex.ru/support/tracker/en/api/issues/create-issue)
+- [Read transitions](https://yandex.ru/support/tracker/en/api/issues/get-transitions) and [execute transition](https://yandex.ru/support/tracker/en/api/issues/new-transition)
+- [Link response direction](https://yandex.ru/support/tracker/en/api/issues/get-links), [paginated links](https://yandex.ru/support/tracker/ru/api/issues/get-links-paginate), [create](https://www.yandex.ru/support/tracker/en/api/issues/link-issue), [remove](https://yandex.ru/support/tracker/en/api/issues/delete-link-issue)
+- [Request limits](https://yandex.ru/support/tracker/en/validation)
+
+## Separate organization acceptance checks
+
+Automated tests use a local HTTP emulator and never contact real Tracker issues. Before production enablement, use a separately authorized test organization to verify actual field IDs/schema, OAuth/IAM rights and rotation, queue workflow transitions and required fields, the configured dependency direction/relationship pair, unique-filter indexing after lost creation responses, permission-dependent 403/404 behavior, and real throttling/Retry-After behavior. No live organization has been modified as part of implementation.
+
+## Debugging missing milestones and unsaved settings
+
+Set `ROADMAP_LOG_LEVEL=debug` in the backend environment (or `.env` for Compose), then rebuild/recreate the container with `docker compose up -d --build`. Follow logs with `docker compose logs -f --tail=100 roadmap`. Debug logs include route templates, HTTP status, duration, Tracker attempt counts, graph counts and configuration counts. They exclude credentials, headers, query strings, payloads and issue contents. The default log level is `info`; `warn` and `error` are also supported.
+
+Open `/?debug=1` to show timeline diagnostics: loaded/filtered milestone counts, milestones inside the date window, selected projects, active filters, zoom and scroll offset. Use Reset filters and Fit to reveal milestones hidden by filters or a date window. Fit clears the date window and scroll position. The graph refreshes every 15 seconds and on window focus while authenticated, visible and outside a milestone editing dialog.
+
+Settings save results/errors are displayed next to the Save button. Saved settings are reloaded from the canonical API response. Status-key corrections do not require unlinking imported milestones once pending operations have finished. There is only one outgoing Tracker status per local status; selecting a new one immediately clears competing choices. Outgoing destination mappings and permission to write the Status field are separate controls; the UI explains when the Status field remains read-only.

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { en, ru } from "./i18n";
+  import TrackerPanel from "./lib/TrackerPanel.svelte";
+  import TrackerConnection from "./lib/TrackerConnection.svelte";
+  import { trackerEn, trackerRu } from "./i18n/tracker";
   import {
     chain,
     edgePath,
@@ -13,9 +16,20 @@
     type Graph,
     type Conflict,
   } from "./lib/graph";
+  const debugView =
+    new URLSearchParams(window.location.search).get("debug") === "1";
   let lang = $state(localStorage.getItem("rg.lang") || "en"),
     theme = $state(localStorage.getItem("rg.theme") || "dark");
   let t = $derived(lang === "ru" ? ru : en);
+  let trackerT = $derived(lang === "ru" ? trackerRu : trackerEn);
+  let projectSettingsID = $state(""),
+    integrationDirty = $state(false);
+  function navigate(next: string, id = "") {
+    if (integrationDirty && !confirm(trackerT.discard)) return;
+    integrationDirty = false;
+    projectSettingsID = id;
+    page = next;
+  }
   const tr = (key: string) => (t as Record<string, string>)[key] || key;
   let graph = $state<Graph>({ projects: [], milestones: [], dependencies: [] }),
     conflicts = $state<Conflict[]>([]),
@@ -221,6 +235,11 @@
   }
   onMount(() => {
     session();
+    const refreshIfIdle = () => {
+      if (authenticated && !modal && !document.hidden) void load();
+    };
+    const refreshTimer = setInterval(refreshIfIdle, 15000);
+    window.addEventListener("focus", refreshIfIdle);
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
@@ -228,7 +247,11 @@
       }
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      window.removeEventListener("focus", refreshIfIdle);
+      clearInterval(refreshTimer);
+    };
   });
   async function login() {
     error = "";
@@ -243,6 +266,8 @@
     }
   }
   async function logout() {
+    if (integrationDirty && !confirm(trackerT.discard)) return;
+    integrationDirty = false;
     try {
       await api("/auth/logout", "POST");
       authenticated = false;
@@ -376,6 +401,14 @@
       error = (e as Error).message;
     }
   }
+  async function fit() {
+    rangeStart = "";
+    rangeEnd = "";
+    zoom = "fit";
+    await tick();
+    if (scroller) scroller.scrollLeft = 0;
+    scroll = 0;
+  }
   function today() {
     if (scroller) scroller.scrollLeft = scale(new Date()) - viewWidth / 2;
   }
@@ -442,16 +475,16 @@
       href="/"
       onclick={(e) => {
         e.preventDefault();
-        page = "overview";
+        navigate("overview");
       }}><span class="logo">⌘</span> Roadmap Graph</a
     >
     <nav>
       <button
         class:active={page === "overview"}
-        onclick={() => (page = "overview")}>▧ <span>{t.overview}</span></button
+        onclick={() => navigate("overview")}>▧ <span>{t.overview}</span></button
       ><button
         class:active={page === "projects"}
-        onclick={() => (page = "projects")}>▱ <span>{t.projects}</span></button
+        onclick={() => navigate("projects")}>▱ <span>{t.projects}</span></button
       >
     </nav>
     <div class="top-search">
@@ -459,7 +492,7 @@
         aria-label={t.search}
         placeholder={t.search}
         bind:value={query}
-        oninput={() => (page = "overview")}
+        oninput={() => navigate("overview")}
       /><kbd>⌘ K</kbd>
     </div>
     <button
@@ -475,7 +508,7 @@
     ><button
       aria-label={t.settings}
       class:active={page === "settings"}
-      onclick={() => (page = "settings")}>⚙</button
+      onclick={() => navigate("settings")}>⚙</button
     >
     <div class="avatar">RG</div>
   </header>
@@ -498,8 +531,8 @@
             ><button
               class="small"
               title={t.editProject}
-              aria-label={`${t.editProject} ${p.name}`}
-              onclick={() => open("project", p.id)}>···</button
+              aria-label={`${trackerT.projectSettings} ${p.name}`}
+              onclick={() => navigate("project_settings", p.id)}>···</button
             >
           </div>{/each}{#if !projects.length}<p class="muted">
             {t.emptyProjects}
@@ -571,7 +604,38 @@
               ></select
             ></label
           ><button onclick={logout}>{t.logout}</button>
+          <TrackerConnection
+            {api}
+            {lang}
+            onproject={(id) => navigate("project_settings", id)}
+            onDirtyChange={(dirty) => (integrationDirty = dirty)}
+          />
         </section>
+      {:else if page === "project_settings"}
+        {@const project = projectMap.get(projectSettingsID)}
+        {#if project}<section class="project-integration-settings">
+            <div class="page-heading">
+              <h1>{trackerT.projectSettings}: {project.name}</h1>
+              <button onclick={() => navigate("projects")}>{t.projects}</button>
+            </div>
+            <h2>{trackerT.general}</h2>
+            <p>{project.description}</p>
+            <button onclick={() => open("project", project.id)}
+              >{t.editProject}</button
+            >
+            {#key project.id}<TrackerPanel
+                {api}
+                {lang}
+                {projects}
+                projectID={project.id}
+                projectName={project.name}
+                onchange={load}
+                onconnection={() => navigate("settings")}
+                onDirtyChange={(dirty) => (integrationDirty = dirty)}
+              />{/key}
+          </section>{:else}<button onclick={() => navigate("projects")}
+            >{t.projects}</button
+          >{/if}
       {:else if page === "projects"}<div class="page-heading">
           <div>
             <p class="eyebrow">{t.workspace}</p>
@@ -594,7 +658,9 @@
                 {t.releases}</small
               >
               <div class="card-actions">
-                <button onclick={() => open("project", p.id)}>{t.edit}</button
+                <button onclick={() => open("project", p.id)}>{t.edit}</button>
+                <button onclick={() => navigate("project_settings", p.id)}
+                  >{trackerT.projectSettings}</button
                 ><button
                   aria-label={`${t.moveUp} ${p.name}`}
                   disabled={i === 0}
@@ -626,6 +692,53 @@
             onclick={() => open("milestone")}>＋ {t.addMilestone}</button
           >
         </div>
+        {#if debugView}<details
+            class="timeline-diagnostics"
+            open
+            data-testid="timeline-diagnostics"
+          >
+            <summary>{t.diagnostics}</summary>
+            <pre>{JSON.stringify(
+                {
+                  loaded_milestones: graph.milestones.length,
+                  filtered_milestones: milestones.length,
+                  in_date_window: milestones.filter(
+                    (m) => m.planned_date >= start && m.planned_date <= end,
+                  ).length,
+                  visible_projects: visibleProjects.length,
+                  total_projects: projects.length,
+                  hidden_projects: hidden.length,
+                  status_filter: status,
+                  type_filter: kind,
+                  search_active: Boolean(query),
+                  only_conflicts: onlyConflicts,
+                  date_from: start,
+                  date_to: end,
+                  zoom,
+                  viewport_width: viewWidth,
+                  timeline_width: width,
+                  scroll_left: scroll,
+                },
+                null,
+                2,
+              )}</pre>
+            <button
+              onclick={async () => {
+                reset();
+                await fit();
+              }}>{t.reset}</button
+            >
+          </details>{/if}
+        {#if milestones.length > 0 && !milestones.some((m) => m.planned_date >= start && m.planned_date <= end)}<p
+            role="status"
+          >
+            {t.outsideWindow} <button onclick={fit}>{t.fit}</button>
+          </p>{/if}
+        {#if graph.milestones.length > 0 && milestones.length === 0}<p
+            role="status"
+          >
+            {t.noResults} <button onclick={reset}>{t.reset}</button>
+          </p>{/if}
         <div class="stats">
           <div>
             <span class="stat-icon blue">▱</span><span class="stat-number"
@@ -666,9 +779,8 @@
                   >{/if}
               </h2>
               <div class="graph-tools">
-                <button
-                  class:active={zoom === "fit"}
-                  onclick={() => (zoom = "fit")}>{t.fit}</button
+                <button class:active={zoom === "fit"} onclick={fit}
+                  >{t.fit}</button
                 ><button onclick={today}>{t.today}</button><span
                   class="tool-divider"
                 ></span><button
@@ -774,6 +886,7 @@
                       height="108"
                       fill={p.color}
                       opacity=".035"
+                      pointer-events="none"
                       rx="8"
                     /><line
                       x1="0"
@@ -867,7 +980,13 @@
                           choose(m);
                         }
                       }}
-                      ><circle
+                      ><rect
+                        x={pos.x - 16}
+                        y={pos.y - 16}
+                        width="32"
+                        height="32"
+                        fill="transparent"
+                      /><circle
                         cx={pos.x}
                         cy={pos.y}
                         r={selected === m.id || hovered === m.id ? 15 : 11}
@@ -1006,6 +1125,15 @@
           >
         </div>
         <div class="detail-content">
+          {#key current.project_id}<TrackerPanel
+              {api}
+              {lang}
+              {projects}
+              milestoneID={current.id}
+              projectID={current.project_id}
+              projectName={projectMap.get(current.project_id)?.name || ""}
+              onchange={load}
+            />{/key}
           <div class="metadata">
             <div>
               <span>{t.planned_date}</span><strong
@@ -1148,7 +1276,12 @@
         )}</small
       >{#if tooltip.m.description}<p>{tooltip.m.description}</p>{/if}
     </div>{/if}
-  <dialog bind:this={dialog} onclose={() => (modal = "")}>
+  <dialog
+    bind:this={dialog}
+    onclose={() => {
+      if (!dialog.open) modal = "";
+    }}
+  >
     <form
       onsubmit={(e) => {
         e.preventDefault();
@@ -1194,7 +1327,10 @@
             bind:value={form.title}
           /></label
         ><label
-          >{t.project}<select bind:value={form.project_id} required
+          >{t.project}<select
+            aria-label={t.project}
+            bind:value={form.project_id}
+            required
             >{#each projects as p}<option value={p.id}>{p.name}</option
               >{/each}</select
           ></label
@@ -1238,6 +1374,7 @@
         >
       {:else if modal === "dependency"}<label
           >{t.prerequisite}<select
+            aria-label={t.prerequisite}
             required
             bind:value={form.prerequisite_milestone_id}
             >{#each graph.milestones as m}<option value={m.id}
@@ -1248,6 +1385,7 @@
         <div class="direction-hint">↓ {t.requires} ↑</div>
         <label
           >{t.dependent}<select
+            aria-label={t.dependent}
             required
             bind:value={form.dependent_milestone_id}
             >{#each graph.milestones as m}<option value={m.id}

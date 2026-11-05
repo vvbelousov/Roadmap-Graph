@@ -52,7 +52,12 @@ const fixture = {
     project("project-x", "PROJECT X", "#7b9cff", 1),
   ],
   milestones: [
-    milestone("common-module2", "common-module", "COMMON MODULE V2", "2027-01-20"),
+    milestone(
+      "common-module2",
+      "common-module",
+      "COMMON MODULE V2",
+      "2027-01-20",
+    ),
     milestone("project-x2", "project-x", "PROJECT X V2", "2027-01-10"),
   ],
   dependencies: [
@@ -89,6 +94,29 @@ beforeEach(() => {
           },
         ];
       else if (url.endsWith("/settings")) data = {};
+      else if (/\/projects\/[^/]+\/tracker$/.test(url))
+        data = {
+          config: {
+            enabled: false,
+            revision: 0,
+            selections: [],
+            fields: {
+              title: { field: "summary", codec: "string", writable: true },
+              planned_date: { field: "dueDate", codec: "date", writable: true },
+            },
+            statuses: {},
+            write_statuses: {},
+            links: [],
+          },
+          connection: {
+            enabled: false,
+            org_id: "org",
+            auth: "OAuth",
+            org_header: "X-Org-ID",
+          },
+          records: [],
+          outbox: [],
+        };
       else if (url.endsWith("/impact"))
         data = { direct: ["project-x2"], transitive: [], conflicts: [] };
       else if (method === "PATCH") data = { ...fixture.milestones[0], ...body };
@@ -120,16 +148,88 @@ async function boot() {
   return result;
 }
 describe("App DOM integration", () => {
+  it("diagnoses hidden milestones and Fit restores the date window", async () => {
+    window.history.replaceState({}, "", "/?debug=1");
+    try {
+      await boot();
+      const diagnostics = screen.getByTestId("timeline-diagnostics");
+      expect(diagnostics.textContent).toContain('"loaded_milestones": 2');
+      await fireEvent.input(screen.getByLabelText("From", { exact: true }), {
+        target: { value: "2030-01-01" },
+      });
+      await screen.findByText(
+        "Milestones are outside the selected date range.",
+      );
+      expect(diagnostics.textContent).toContain('"in_date_window": 0');
+      await fireEvent.click(screen.getAllByRole("button", { name: "Fit" })[0]);
+      await waitFor(() =>
+        expect(diagnostics.textContent).toContain('"in_date_window": 2'),
+      );
+      expect(
+        (screen.getByLabelText("From", { exact: true }) as HTMLInputElement)
+          .value,
+      ).toBe("");
+    } finally {
+      window.history.replaceState({}, "", "/");
+    }
+  });
+  it("opens project integration from the sidebar and confirms unsaved project switching", async () => {
+    await boot();
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Project settings COMMON MODULE" }),
+    );
+    await screen.findByRole("heading", {
+      name: "Project settings: COMMON MODULE",
+    });
+    await fireEvent.click(
+      await screen.findByLabelText("Enable this project's synchronization"),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Project settings PROJECT X" }),
+    );
+    expect(confirm).toHaveBeenCalled();
+    expect(
+      screen.getByRole("heading", { name: "Project settings: COMMON MODULE" }),
+    ).toBeTruthy();
+    expect(
+      (
+        screen.getByLabelText(
+          "Enable this project's synchronization",
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    confirm.mockReturnValue(true);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Project settings PROJECT X" }),
+    );
+    await screen.findByRole("heading", { name: "Project settings: PROJECT X" });
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByLabelText(
+            "Enable this project's synchronization",
+          ) as HTMLInputElement
+        ).checked,
+      ).toBe(false),
+    );
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
   it("filters project lanes and restores them using the actual sidebar control", async () => {
     const { container } = await boot();
-    await fireEvent.click(screen.getByRole("checkbox", { name: "COMMON MODULE" }));
+    await fireEvent.click(
+      screen.getByRole("checkbox", { name: "COMMON MODULE" }),
+    );
     await waitFor(() =>
       expect(
         container.querySelectorAll('[data-testid="milestone"]').length,
       ).toBe(1),
     );
     expect(container.querySelector('[data-id="project-x2"]')).not.toBeNull();
-    await fireEvent.click(screen.getByRole("checkbox", { name: "COMMON MODULE" }));
+    await fireEvent.click(
+      screen.getByRole("checkbox", { name: "COMMON MODULE" }),
+    );
     await waitFor(() =>
       expect(
         container.querySelectorAll('[data-testid="milestone"]').length,
@@ -140,7 +240,9 @@ describe("App DOM integration", () => {
     const { container } = await boot();
     const edge = container.querySelector('[data-dependency-id="edge1"]')!;
     expect(edge.getAttribute("opacity")).toBe(".26");
-    await fireEvent.click(screen.getByRole("button", { name: "COMMON MODULE V2" }));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "COMMON MODULE V2" }),
+    );
     const details = await screen.findByRole("complementary", {
       name: "Milestone details",
     });
@@ -149,9 +251,9 @@ describe("App DOM integration", () => {
     await waitFor(() =>
       expect(edge.getAttribute("data-highlighted")).toBe("true"),
     );
-    expect(calls.some((c) => c.url === "/api/milestones/common-module2/impact")).toBe(
-      true,
-    );
+    expect(
+      calls.some((c) => c.url === "/api/milestones/common-module2/impact"),
+    ).toBe(true);
   });
   it("shows date tooltip and transitive highlighting on pointer entry", async () => {
     const { container } = await boot();
@@ -167,7 +269,9 @@ describe("App DOM integration", () => {
         .querySelector('[data-dependency-id="edge1"]')
         ?.getAttribute("data-highlighted"),
     ).toBe("true");
-    await fireEvent.mouseLeave(screen.getByRole("button", { name: "COMMON MODULE V2" }));
+    await fireEvent.mouseLeave(
+      screen.getByRole("button", { name: "COMMON MODULE V2" }),
+    );
     await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
   });
   it("switches theme and language and persists preferences", async () => {
@@ -194,7 +298,9 @@ describe("App DOM integration", () => {
     expect(title.checkValidity()).toBe(false);
     expect(planned.required).toBe(true);
     await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await fireEvent.click(screen.getByRole("button", { name: "COMMON MODULE V2" }));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "COMMON MODULE V2" }),
+    );
     await screen.findByRole("complementary", { name: "Milestone details" });
     await fireEvent.click(screen.getByRole("button", { name: /Edit$/ }));
     await fireEvent.input(await screen.findByLabelText("Title"), {
@@ -215,7 +321,9 @@ describe("App DOM integration", () => {
   it("requires an explicit actual completion date for completed status", async () => {
     fixture.milestones[0].status = "completed";
     await boot();
-    await fireEvent.click(screen.getByRole("button", { name: "COMMON MODULE V2" }));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "COMMON MODULE V2" }),
+    );
     await screen.findByRole("complementary", { name: "Milestone details" });
     await fireEvent.click(screen.getByRole("button", { name: /Edit$/ }));
     const completed = (await screen.findByLabelText(

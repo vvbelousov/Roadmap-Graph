@@ -41,6 +41,7 @@ type Server struct {
 	sessions map[string]session
 	attempts map[string]attempt
 	writeMu  sync.Mutex
+	tracker  *trackerClient
 }
 
 func New(db *sql.DB, c Config) (*Server, error) {
@@ -53,6 +54,7 @@ func New(db *sql.DB, c Config) (*Server, error) {
 	}
 	c.Password = ""
 	s := &Server{db: db, cfg: c, hash: hash, mux: http.NewServeMux(), sessions: map[string]session{}, attempts: map[string]attempt{}}
+	s.tracker = newTrackerClient()
 	s.routes()
 	return s, nil
 }
@@ -102,6 +104,22 @@ func (s *Server) current(r *http.Request) (session, bool) {
 	return v, ok
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") && slog.Default().Enabled(r.Context(), slog.LevelDebug) {
+		started := time.Now()
+		captured := &debugResponseWriter{ResponseWriter: w}
+		w = captured
+		defer func() {
+			route := r.Pattern
+			if route == "" {
+				route = "/api/{unmatched}"
+			}
+			status := captured.status
+			if status == 0 {
+				status = 200
+			}
+			slog.DebugContext(r.Context(), "API request completed", "method", r.Method, "route", route, "status", status, "duration_ms", time.Since(started).Milliseconds())
+		}()
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "same-origin")
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -128,6 +146,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 func (s *Server) routes() {
+	s.trackerRoutes()
 	s.mux.HandleFunc("PUT /api/projects/order", s.reorderProjects)
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if e := s.db.Ping(); e != nil {
@@ -155,6 +174,7 @@ func (s *Server) routes() {
 			fail(w, 500, "Database error")
 			return
 		}
+		slog.DebugContext(r.Context(), "graph loaded", "projects", len(g.Projects), "milestones", len(g.Milestones), "dependencies", len(g.Dependencies))
 		respond(w, 200, g)
 	})
 	s.mux.HandleFunc("GET /api/analysis/conflicts", func(w http.ResponseWriter, r *http.Request) {

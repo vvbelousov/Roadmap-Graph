@@ -190,7 +190,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		}
 		d.ID = token()
 		d.CreatedAt = now()
-		_, e = s.db.Exec("INSERT INTO dependencies VALUES(?,?,?,?,?)", d.ID, d.PrerequisiteID, d.DependentID, d.Type, d.CreatedAt)
+		e = s.mutateDependency(d, false)
 		if e != nil {
 			dbfail(w, e)
 			return
@@ -263,6 +263,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 			if m.ID != id {
 				continue
 			}
+			old := m
 			if !mergePatch(w, r, &m) {
 				return
 			}
@@ -271,7 +272,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			m.UpdatedAt = now()
-			_, e = s.db.Exec("UPDATE milestones SET project_id=?,title=?,description=?,milestone_type=?,version=?,planned_date=?,completed_date=?,status=?,owner=?,external_url=?,updated_at=? WHERE id=?", m.ProjectID, m.Title, m.Description, m.Type, m.Version, m.PlannedDate, m.CompletedDate, m.Status, m.Owner, m.ExternalURL, m.UpdatedAt, id)
+			e = s.patchTrackedMilestone(m, old)
 			if e != nil {
 				dbfail(w, e)
 				return
@@ -288,12 +289,28 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "Not found")
 		return
 	}
-	res, e := s.db.Exec("DELETE FROM "+table+" WHERE id=?", r.PathValue("id"))
+	var n int64
+	var e error
+	if table == "dependencies" {
+		g, err := s.graph()
+		if err != nil {
+			fail(w, 500, "Database error")
+			return
+		}
+		for _, d := range g.Dependencies {
+			if d.ID == r.PathValue("id") {
+				e = s.mutateDependency(d, true)
+				n = 1
+				break
+			}
+		}
+	} else {
+		n, e = s.deleteGraphObject(table, r.PathValue("id"))
+	}
 	if e != nil {
 		dbfail(w, e)
 		return
 	}
-	n, _ := res.RowsAffected()
 	if n == 0 {
 		fail(w, 404, "Record not found")
 		return

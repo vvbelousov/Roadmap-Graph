@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "org_id": "REPLACE_ORGANIZATION_ID",
+  "org_header": "X-Org-ID",
+  "auth": "OAuth",
+  "poll_interval_seconds": 300,
+  "revision": 0
+}

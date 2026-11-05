@@ -122,6 +122,8 @@ export const en = {
   zoomIn: "Zoom in",
   zoomOut: "Zoom out",
   menu: "Toggle sidebar",
+  diagnostics: "Timeline diagnostics",
+  outsideWindow: "Milestones are outside the selected date range.",
 };
 export const ru: Record<keyof typeof en, string> = {
   workspace: "Рабочая область",
@@ -245,4 +247,6 @@ export const ru: Record<keyof typeof en, string> = {
   zoomIn: "Приблизить",
   zoomOut: "Отдалить",
   menu: "Открыть боковую панель",
+  diagnostics: "Диагностика таймлайна",
+  outsideWindow: "Вехи находятся вне выбранного диапазона дат.",
 };

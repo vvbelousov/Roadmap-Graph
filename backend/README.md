@@ -36,3 +36,7 @@ go test -race -cover ./...
 go vet ./...
 go test ./internal/server -run '^$' -bench . -benchmem
 ```
+
+## Optional Yandex Tracker
+
+Migration v2 adds connection metadata, stable issue baselines/conflicts, the durable outbox, dependency baselines, import previews and retry cooldowns. Migration v3 splits shared connection settings from revisioned `tracker_project_config`, assigns stable selection IDs and project-owned outbox/preview records, and preserves legacy identity/retry state transactionally. Ambiguous legacy destinations are retained with review warnings and paused. All execution paths resolve the milestone/project owner’s configuration; cross-project hard dependencies belong to the prerequisite project. Shared connection APIs and project-scoped mapping/import/sync APIs are separate, and stale saves return 409. `StartTracker(ctx)` runs the optional poller in the existing process. Configure `ROADMAP_TRACKER_TOKEN` only in the backend environment; no token or custom API destination is accepted by integration endpoints. The connection is disabled by default. See [Tracker setup and recovery](../docs/TRACKER.md), [API routes](../docs/API.md), and [executed checks](../docs/VERIFICATION.md).
