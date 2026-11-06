@@ -3,6 +3,7 @@ package server
 import "time"
 
 type Project struct {
+	Revision    int64  `json:"revision"`
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Slug        string `json:"slug"`
@@ -14,6 +15,7 @@ type Project struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 type Milestone struct {
+	Revision      int64  `json:"revision"`
 	ID            string `json:"id"`
 	ProjectID     string `json:"project_id"`
 	Title         string `json:"title"`

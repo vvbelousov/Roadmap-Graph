@@ -169,13 +169,13 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 		return s.saveTrackerState(m, x, true)
 	}
 	if len(patch) > 0 {
-		_, e = s.tracker.request(ctx, c, "PATCH", fmt.Sprintf("%s?version=%d", issuePath(id), ver), patch, nil)
+		_, e = s.trackerRequest(ctx, c, "PATCH", fmt.Sprintf("%s?version=%d", issuePath(id), ver), patch, nil)
 		if e != nil {
 			return s.recordFailure(x, e)
 		}
 	}
 	if status != "" {
-		fresh, e := s.tracker.issue(ctx, c, id)
+		fresh, e := s.trackerIssue(ctx, c, id)
 		if e != nil {
 			return s.recordFailure(x, e)
 		}
@@ -193,7 +193,7 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 					Key string `json:"key"`
 				} `json:"to"`
 			}
-			_, e = s.tracker.request(ctx, c, "GET", issuePath(id)+"/transitions", nil, &transitions)
+			_, e = s.trackerRequest(ctx, c, "GET", issuePath(id)+"/transitions", nil, &transitions)
 			if e != nil {
 				return s.recordFailure(x, e)
 			}
@@ -209,7 +209,7 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 			if transition == "" {
 				return s.recordFailure(x, fmt.Errorf("status transition unavailable or requires workflow configuration"))
 			}
-			_, e = s.tracker.request(ctx, c, "POST", issuePath(id)+"/transitions/"+url.PathEscape(transition)+"/_execute", map[string]any{}, nil)
+			_, e = s.trackerRequest(ctx, c, "POST", issuePath(id)+"/transitions/"+url.PathEscape(transition)+"/_execute", map[string]any{}, nil)
 			if e != nil {
 				return s.recordFailure(x, e)
 			}
@@ -219,7 +219,7 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 		return nil
 	}
 	// Read back; baseline only acknowledges values actually observed remotely.
-	fresh, e := s.tracker.issue(ctx, c, id)
+	fresh, e := s.trackerIssue(ctx, c, id)
 	if e != nil {
 		return s.recordFailure(x, e)
 	}
@@ -348,6 +348,20 @@ func (s *Server) syncTracker(ctx context.Context, requested TrackerConfig) (err 
 	return nil
 }
 func (s *Server) verifyOutboxContext(c TrackerConfig) error {
+	g, e := s.connectionConfig()
+	if e != nil {
+		return e
+	}
+	if g.OrgHeader != c.OrgHeader || g.OrgID != c.OrgID {
+		return fmt.Errorf("Organization identity changed; pending operations require review")
+	}
+	var mismatched int
+	if e = s.db.QueryRow("SELECT count(*) FROM tracker_outbox o WHERE o.project_id=? AND (o.organization!=? OR EXISTS (SELECT 1 FROM tracker_publications p WHERE p.id=o.id AND p.organization!=?))", c.ProjectID, c.OrgHeader+":"+c.OrgID, c.OrgHeader+":"+c.OrgID).Scan(&mismatched); e != nil {
+		return e
+	}
+	if mismatched > 0 {
+		return fmt.Errorf("Pending operations belong to another or unknown organization; review required")
+	}
 	expected := mappingHash(projectPart(c))
 	var n int
 	if e := s.db.QueryRow("SELECT count(*) FROM tracker_outbox WHERE project_id=? AND context_hash!=?", c.ProjectID, expected).Scan(&n); e != nil {
@@ -374,7 +388,7 @@ func (s *Server) syncProjectTracker(ctx context.Context, c TrackerConfig) error 
 		if sel.Query != "" {
 			body = map[string]any{"query": sel.Query}
 		}
-		batch, e := s.tracker.search(ctx, c, body)
+		batch, e := s.trackerSearch(ctx, c, body)
 		if e != nil {
 			return e
 		}
@@ -409,7 +423,7 @@ func (s *Server) syncProjectTracker(ctx context.Context, c TrackerConfig) error 
 		}
 		v, in := selected[x.ExternalID]
 		if !in {
-			v, e = s.tracker.issue(ctx, c, x.ExternalID)
+			v, e = s.trackerIssue(ctx, c, x.ExternalID)
 			if e != nil {
 				if er := s.recordFailure(x, e); er != nil {
 					return er
@@ -466,6 +480,9 @@ func (s *Server) syncProjectTracker(ctx context.Context, c TrackerConfig) error 
 	return nil
 }
 func (s *Server) publishPending(ctx context.Context, c TrackerConfig) error {
+	if e := s.verifyOutboxContext(c); e != nil {
+		return e
+	}
 	type operation struct {
 		ID, LocalID, Payload, SelectionID string
 		Attempts                          int
@@ -508,25 +525,39 @@ func (s *Server) publishPending(ctx context.Context, c TrackerConfig) error {
 				m = v
 			}
 		}
-		// Search by the persisted unique key before (re)creation; a lost response cannot duplicate issues.
-		found, e := s.tracker.search(ctx, c, map[string]any{"filter": map[string]string{"unique": op.ID}})
-		if e != nil {
+		if m.ID == "" {
+			return fmt.Errorf("Publication milestone missing; recovery required")
+		}
+		// A confirmed identity takes precedence over search indexing and field decoding.
+		var externalID string
+		if e = s.db.QueryRow("SELECT external_id FROM tracker_publications WHERE id=?", op.ID).Scan(&externalID); e != nil {
 			return e
 		}
 		var issue map[string]any
-		if len(found) > 1 {
-			return fmt.Errorf("duplicate publication identity")
-		}
-		if len(found) == 1 {
-			issue = found[0]
+		if externalID != "" {
+			issue, e = s.trackerIssue(ctx, c, externalID)
 		} else {
-			body := map[string]any{"queue": op.Payload, "summary": m.Title, "unique": op.ID}
-			for k, f := range c.Fields {
-				if k != "status" && f.Writable {
-					body[f.Field] = remoteValue(localFields(m)[k], f)
+			found, err := s.trackerSearch(ctx, c, map[string]any{"filter": map[string]string{"unique": op.ID}})
+			e = err
+			if e == nil {
+				if len(found) > 1 {
+					e = fmt.Errorf("duplicate publication identity; review required")
+				} else if len(found) == 1 {
+					issue = found[0]
+				} else {
+					body := map[string]any{"queue": op.Payload, "summary": m.Title, "unique": op.ID}
+					for k, f := range c.Fields {
+						if k != "status" && f.Writable {
+							body[f.Field] = remoteValue(localFields(m)[k], f)
+						}
+					}
+					// Commit uncertainty before crossing the remote creation boundary.
+					if _, e = s.db.Exec("UPDATE tracker_publications SET state='outcome_unknown' WHERE id=?", op.ID); e != nil {
+						return e
+					}
+					_, e = s.trackerRequest(ctx, c, "POST", "/v3/issues", body, &issue)
 				}
 			}
-			_, e = s.tracker.request(ctx, c, "POST", "/v3/issues", body, &issue)
 		}
 		if e != nil {
 			delay := time.Duration(1<<min(op.Attempts, 10)) * time.Second
@@ -536,12 +567,30 @@ func (s *Server) publishPending(ctx context.Context, c TrackerConfig) error {
 			}
 			return e
 		}
-		id, key, version, e := issueIdentity(issue)
-		if e != nil {
-			return e
+		remoteID, _ := issue["id"].(string)
+		remoteKey, _ := issue["key"].(string)
+		if externalID != "" && remoteID != externalID {
+			return fmt.Errorf("Confirmed publication identity changed; review required")
 		}
-		f, e := remoteFields(issue, c)
+		if remoteID != "" {
+			if _, e = s.db.Exec("UPDATE tracker_publications SET external_id=?,issue_key=?,url=?,state='created_needs_mapping' WHERE id=?", remoteID, remoteKey, trackerURL(remoteKey), op.ID); e != nil {
+				return e
+			}
+		}
+		id, key, version, e := issueIdentity(issue)
+		var f map[string]string
+		if e == nil {
+			f, e = remoteFields(issue, c)
+		}
 		if e != nil {
+			msg := "Remote issue created; correct project mapping: " + e.Error()
+			_, er := s.db.Exec("UPDATE tracker_outbox SET attempts=attempts+1,error=? WHERE id=?", msg, op.ID)
+			if er != nil {
+				return er
+			}
+			if _, er = s.db.Exec("UPDATE tracker_publications SET error=? WHERE id=?", msg, op.ID); er != nil {
+				return er
+			}
 			return e
 		}
 		tx, e := s.db.Begin()
@@ -559,6 +608,10 @@ func (s *Server) publishPending(ctx context.Context, c TrackerConfig) error {
 			_, e = tx.Exec("DELETE FROM tracker_outbox WHERE id=?", op.ID)
 		}
 		if e != nil {
+			tx.Rollback()
+			return e
+		}
+		if _, e = tx.Exec("UPDATE tracker_publications SET state='bound',error='' WHERE id=?", op.ID); e != nil {
 			tx.Rollback()
 			return e
 		}

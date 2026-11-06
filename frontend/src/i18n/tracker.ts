@@ -1,4 +1,26 @@
 export const trackerEn = {
+  recoverPublication: "Recover previous publication",
+  resumePublication: "Resume original publication attempt",
+  retainPublication: "Retain recovered issue binding",
+  detachPublication: "Detach issue (keep it in Tracker)",
+  publicationStates: {
+    recovery_not_found:
+      "No issue found yet; the outcome remains uncertain. You may retry recovery or explicitly resume the same publication identity.",
+    queued: "Publication queued; no creation attempt yet.",
+    outcome_unknown:
+      "Publication outcome unknown. Recover the existing attempt before publishing again.",
+    cancelled_before_attempt:
+      "Publication cancelled before any creation attempt.",
+    cancelled_requires_recovery:
+      "Publication cancelled; the remote outcome is unknown. Recover before publishing again.",
+    created_needs_mapping:
+      "Remote issue created. Correct the project mapping, then synchronize again.",
+    recovered_requires_decision:
+      "Remote issue recovered. Retain the binding or detach the issue.",
+    detached:
+      "Remote issue detached. It remains in Tracker; recovery history is preserved.",
+    bound: "Publication linked.",
+  },
   heading: "Yandex Tracker",
   projectSettings: "Project settings",
   projectSettingsHint:
@@ -136,6 +158,27 @@ export const trackerEn = {
   },
 };
 export const trackerRu: typeof trackerEn = {
+  recoverPublication: "Восстановить результат публикации",
+  resumePublication: "Возобновить исходную попытку публикации",
+  retainPublication: "Сохранить привязку восстановленной задачи",
+  detachPublication: "Отсоединить задачу (оставить в Трекере)",
+  publicationStates: {
+    queued: "Публикация в очереди; попыток создания ещё не было.",
+    outcome_unknown:
+      "Результат публикации неизвестен. Восстановите предыдущую попытку перед повторной публикацией.",
+    cancelled_before_attempt: "Публикация отменена до попытки создания задачи.",
+    cancelled_requires_recovery:
+      "Публикация отменена; результат в Трекере неизвестен. Сначала восстановите его.",
+    created_needs_mapping:
+      "Задача создана в Трекере. Исправьте соответствия проекта и повторите синхронизацию.",
+    recovered_requires_decision:
+      "Задача восстановлена. Сохраните привязку или отсоедините задачу.",
+    recovery_not_found:
+      "Задача пока не найдена; результат остаётся неизвестным. Повторите восстановление или явно возобновите исходную попытку публикации.",
+    detached:
+      "Задача отсоединена и остаётся в Трекере. История восстановления сохранена.",
+    bound: "Задача опубликована и привязана.",
+  },
   heading: "Яндекс Трекер",
   projectSettings: "Настройки проекта",
   projectSettingsHint:
@@ -421,6 +464,18 @@ const messagesRu: Record<string, string> = {
 export function trackerMessage(message: string, lang: string): string {
   if (lang !== "ru") return message;
   const raw = message.replace(/^Error: /, "");
+  if (raw.startsWith("Organization change blocked"))
+    return "Смена организации запрещена: сохранены привязки, ожидающие операции или история восстановления публикаций.";
+  if (raw.startsWith("Remote issue created; correct project mapping:"))
+    return (
+      "Задача создана в Трекере. Исправьте соответствия проекта: " +
+      trackerMessage(
+        raw.slice("Remote issue created; correct project mapping: ".length),
+        lang,
+      )
+    );
+  if (raw.startsWith("Publication outcome unknown"))
+    return "Результат публикации неизвестен. Повторите восстановление, затем сохраните привязку или отсоедините задачу.";
   if (messagesRu[raw]) return messagesRu[raw];
   const unmapped = raw.match(/^unmapped Tracker status: (.*)$/);
   if (unmapped)

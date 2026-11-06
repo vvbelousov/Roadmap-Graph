@@ -1,5 +1,6 @@
 import { scaleUtc } from "d3-scale";
 export type Project = {
+  revision?: number;
   id: string;
   name: string;
   slug: string;
@@ -9,6 +10,7 @@ export type Project = {
   sort_order: number;
 };
 export type Milestone = {
+  revision?: number;
   id: string;
   project_id: string;
   title: string;

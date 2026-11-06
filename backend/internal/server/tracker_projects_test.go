@@ -260,7 +260,7 @@ func TestLegacyTrackerMigrationIsTransactionalIndependentAndDurable(t *testing.T
 		t.Fatal(e)
 	}
 	for _, id := range []string{"a", "b", "orphan"} {
-		if _, e = db.Exec("INSERT INTO projects VALUES(?,?,?,'','#60a5fa','',0,?,?)", id, id, id, now(), now()); e != nil {
+		if _, e = db.Exec("INSERT INTO projects(id,name,slug,description,color,icon,sort_order,created_at,updated_at) VALUES(?,?,?,'','#60a5fa','',0,?,?)", id, id, id, now(), now()); e != nil {
 			t.Fatal(e)
 		}
 	}

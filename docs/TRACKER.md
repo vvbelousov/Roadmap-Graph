@@ -52,7 +52,7 @@ Unmapped fields belong to Roadmap and remain local. Mapped fields without write 
 
 Date-time fields such as `resolvedAt` are not accepted as date-only fields: configure a date-only completion field. Undated issues are skipped with a reason; dates are never invented. Status transitions requiring additional workflow form fields are outside this version; failures remain visible. Field formats are an explicit operator contract, not automatic schema inference. Read-only permission failures are visible and recoverable through Retry after correcting access.
 
-Within the owning project, field IDs/formats and link mappings cannot change while linked milestones exist. Unlink before replacing those mappings. Any mapping-context change is blocked while outgoing operations remain pending, so queued work cannot be reinterpreted under new mappings. Finish the operation or explicitly unlink/cancel it first. Pending publication destinations cannot be removed or assigned a different queue; reordering them is safe. With no pending operations, status keys, status meanings, write permissions and outgoing status targets can be corrected after import. Bindings or operations in Project A do not block safe changes in Project B. The next synchronization compares the newly mapped remote status with the saved local baseline; competing local status edits become conflicts. Selecting an outgoing destination clears other outgoing choices for the same Roadmap status, because each Roadmap status has exactly one destination at most. Organization identity cannot change after importing any issue. Exclusion is permanent for an external issue ID in this initial version, including after its local milestone is deleted. Switching organizations with retained tombstones is not supported; this version is for one organization per database.
+Within the owning project, field IDs/formats and link mappings cannot change while linked milestones exist. Unlink before replacing those mappings. Mapping-context changes are blocked while outgoing operations remain pending, except the narrowly scoped partial-publication repairs described below. Finish the operation or explicitly unlink/cancel it first. Pending publication destinations cannot be removed or assigned a different queue; reordering them is safe. With no pending operations, status keys, status meanings, write permissions and outgoing status targets can be corrected after import. Bindings or operations in Project A do not block safe changes in Project B. The next synchronization compares the newly mapped remote status with the saved local baseline; competing local status edits become conflicts. Selecting an outgoing destination clears other outgoing choices for the same Roadmap status, because each Roadmap status has exactly one destination at most. Organization identity cannot change while bindings, pending operations or publication recovery history are retained. Exclusion is permanent for an external issue ID in this initial version, including after its local milestone is deleted. Switching organizations with retained tombstones is not supported; this version is for one organization per database.
 
 ## Dependencies
 
@@ -112,3 +112,56 @@ Set `ROADMAP_LOG_LEVEL=debug` in the backend environment (or `.env` for Compose)
 Open `/?debug=1` to show timeline diagnostics: loaded/filtered milestone counts, milestones inside the date window, selected projects, active filters, zoom and scroll offset. Use Reset filters and Fit to reveal milestones hidden by filters or a date window. Fit clears the date window and scroll position. The graph refreshes every 15 seconds and on window focus while authenticated, visible and outside a milestone editing dialog.
 
 Settings save results/errors are displayed next to the Save button. Saved settings are reloaded from the canonical API response. Status-key corrections do not require unlinking imported milestones once pending operations have finished. There is only one outgoing Tracker status per local status; selecting a new one immediately clears competing choices. Outgoing destination mappings and permission to write the Status field are separate controls; the UI explains when the Status field remains read-only.
+
+## Publication recovery and local edit safety
+
+Publication has distinct durable stages: queued, attempted/outcome unknown,
+created but requiring mapping correction, and bound. A publication journal keeps
+the original Tracker `unique` identity, destination, organization and any confirmed
+issue identity independently of the executable outbox. Cancellation removes the
+executable operation, not its recovery history. Local milestone/project deletion
+also preserves that history. No cancellation or recovery action deletes a Tracker
+issue.
+
+Cancellation before an attempt is labelled separately from an uncertain result.
+After an uncertain result, select **Recover previous publication**. A found issue
+is shown with a link; explicitly retain its binding or detach it. If search returns
+nothing, the result remains uncertain: retry recovery, or explicitly resume the
+original publication attempt. Resumption always reuses its original identity and
+performs reconciliation before creation. A confirmed external ID is read directly
+on subsequent attempts, so incomplete field mappings or search indexing delays
+cannot cause another creation.
+
+**Remote issue created. Correct the project mapping** means the issue identity
+has been saved, but a status/date/version/other field cannot be decoded. The
+milestone panel and project settings show this state and its error. Correct the
+missing incoming status mapping or the field identified by the error, then sync
+again. Repair is narrowly allowed for partial publications; pending updates/links
+and established field bindings retain their existing mapping protections. Retry
+attempts and errors are recorded even when creation itself succeeded. Reset failed
+project operations if the retry limit has been reached.
+
+History remains visible in Tracker status after local deletion; the read-only
+recovery API can still locate the remote issue. A deleted milestone cannot retain
+a binding: use the returned issue link to inspect the preserved remote issue.
+
+The shared organization ID/header cannot change while retained Tracker bindings,
+pending work or publication history depend on it. An expired credential can be
+replaced for the same organization. Queued operations persist their organization;
+workers reject mismatched or unknown identities independently of the settings API.
+
+Projects and milestones now have monotonic revisions. Edit forms submit changed
+fields and the revision from when editing began. A stale save returns 409 and
+preserves the draft. **Load current data and review draft** refreshes unchanged
+fields and keeps the user's changed fields for explicit review and save. Incoming
+Tracker changes and conflict resolution advance the same revision; ordinary sync
+bookkeeping does not. Reordering and conflict-resolution callers also submit
+expected revisions. See [API.md](API.md) for request examples.
+
+Migration 4 appends revision columns, organization context and the publication
+journal in one transaction. It preserves existing entities, bindings, baselines,
+conflicts, exclusions, dependencies, project mappings and retry state, and performs
+no remote requests. Legacy operations retain their original unique identities;
+missing organization identity pauses execution for review. Repeated startup does
+not rerun the migration. Back up the database before upgrading; older clients must
+be upgraded because unversioned local edit requests are rejected.

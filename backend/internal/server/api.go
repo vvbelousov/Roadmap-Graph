@@ -139,6 +139,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
+		p.Revision = 1
 		p.ID = token()
 		p.CreatedAt = now()
 		p.UpdatedAt = p.CreatedAt
@@ -146,7 +147,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			fail(w, 422, e.Error())
 			return
 		}
-		_, e := s.db.Exec("INSERT INTO projects VALUES(?,?,?,?,?,?,?,?,?)", p.ID, p.Name, p.Slug, p.Description, p.Color, p.Icon, p.SortOrder, p.CreatedAt, p.UpdatedAt)
+		_, e := s.db.Exec("INSERT INTO projects(id,name,slug,description,color,icon,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", p.ID, p.Name, p.Slug, p.Description, p.Color, p.Icon, p.SortOrder, p.CreatedAt, p.UpdatedAt)
 		if e != nil {
 			dbfail(w, e)
 			return
@@ -157,6 +158,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &m) {
 			return
 		}
+		m.Revision = 1
 		m.ID = token()
 		m.CreatedAt = now()
 		m.UpdatedAt = m.CreatedAt
@@ -164,7 +166,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			fail(w, 422, e.Error())
 			return
 		}
-		_, e := s.db.Exec("INSERT INTO milestones VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", m.ID, m.ProjectID, m.Title, m.Description, m.Type, m.Version, m.PlannedDate, m.CompletedDate, m.Status, m.Owner, m.ExternalURL, m.CreatedAt, m.UpdatedAt)
+		_, e := s.db.Exec("INSERT INTO milestones(id,project_id,title,description,milestone_type,version,planned_date,completed_date,status,owner,external_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", m.ID, m.ProjectID, m.Title, m.Description, m.Type, m.Version, m.PlannedDate, m.CompletedDate, m.Status, m.Owner, m.ExternalURL, m.CreatedAt, m.UpdatedAt)
 		if e != nil {
 			dbfail(w, e)
 			return
@@ -210,6 +212,18 @@ func mergePatch(w http.ResponseWriter, r *http.Request, v any) bool {
 		}
 	}
 	old, _ := json.Marshal(v)
+	var expected struct {
+		Revision int64 `json:"revision"`
+	}
+	json.Unmarshal(old, &expected)
+	var revision int64
+	if raw, ok := fields["revision"]; !ok {
+		fail(w, 409, "Entity changed or revision missing; reload and review your draft")
+		return false
+	} else if json.Unmarshal(raw, &revision) != nil || revision != expected.Revision {
+		fail(w, 409, "Entity changed since editing began; reload and review your draft")
+		return false
+	}
 	var m map[string]json.RawMessage
 	json.Unmarshal(old, &m)
 	for k, val := range fields {
@@ -250,12 +264,19 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			p.UpdatedAt = now()
-			_, e = s.db.Exec("UPDATE projects SET name=?,slug=?,description=?,color=?,icon=?,sort_order=?,updated_at=? WHERE id=?", p.Name, p.Slug, p.Description, p.Color, p.Icon, p.SortOrder, p.UpdatedAt, id)
+			res, err := s.db.Exec("UPDATE projects SET name=?,slug=?,description=?,color=?,icon=?,sort_order=?,updated_at=? WHERE id=? AND revision=?", p.Name, p.Slug, p.Description, p.Color, p.Icon, p.SortOrder, p.UpdatedAt, id, p.Revision)
+			e = err
+			if e == nil {
+				if n, _ := res.RowsAffected(); n != 1 {
+					fail(w, 409, "Entity changed since editing began; reload and review your draft")
+					return
+				}
+			}
 			if e != nil {
 				dbfail(w, e)
 				return
 			}
-			respond(w, 200, p)
+			s.get(w, r)
 			return
 		}
 	} else {
@@ -277,7 +298,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 				dbfail(w, e)
 				return
 			}
-			respond(w, 200, m)
+			s.get(w, r)
 			return
 		}
 	}
@@ -427,7 +448,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 // silently omit a newly-created lane or produce duplicate order values.
 func (s *Server) reorderProjects(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		IDs []string `json:"ids"`
+		IDs       []string         `json:"ids"`
+		Revisions map[string]int64 `json:"revisions"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -438,20 +460,23 @@ func (s *Server) reorderProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query("SELECT id FROM projects")
+	rows, err := tx.Query("SELECT id,revision FROM projects")
 	if err != nil {
 		fail(w, 500, "Database error")
 		return
 	}
 	existing := map[string]bool{}
+	revisions := map[string]int64{}
 	for rows.Next() {
 		var id string
-		if err = rows.Scan(&id); err != nil {
+		var revision int64
+		if err = rows.Scan(&id, &revision); err != nil {
 			rows.Close()
 			fail(w, 500, "Database error")
 			return
 		}
 		existing[id] = true
+		revisions[id] = revision
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
@@ -467,6 +492,10 @@ func (s *Server) reorderProjects(w http.ResponseWriter, r *http.Request) {
 	for _, id := range body.IDs {
 		if !existing[id] || seen[id] {
 			fail(w, 422, "Order must contain every project ID exactly once")
+			return
+		}
+		if body.Revisions[id] != revisions[id] {
+			fail(w, 409, "Entity changed since editing began; reload and review your draft")
 			return
 		}
 		seen[id] = true

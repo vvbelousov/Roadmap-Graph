@@ -50,17 +50,18 @@ type TrackerConfig struct {
 	Links         []TrackerLinkMapping    `json:"links"`
 }
 type TrackerRecord struct {
-	ProjectID    string                     `json:"project_id"`
-	ExternalID   string                     `json:"external_id"`
-	ConnectionID string                     `json:"connection_id"`
-	Key          string                     `json:"issue_key"`
-	LocalID      string                     `json:"local_id"`
-	URL          string                     `json:"url"`
-	Version      int                        `json:"version"`
-	Baseline     map[string]string          `json:"baseline"`
-	State        string                     `json:"state"`
-	Error        string                     `json:"error"`
-	Conflicts    map[string]TrackerConflict `json:"conflicts"`
+	LocalRevision int64                      `json:"local_revision"`
+	ProjectID     string                     `json:"project_id"`
+	ExternalID    string                     `json:"external_id"`
+	ConnectionID  string                     `json:"connection_id"`
+	Key           string                     `json:"issue_key"`
+	LocalID       string                     `json:"local_id"`
+	URL           string                     `json:"url"`
+	Version       int                        `json:"version"`
+	Baseline      map[string]string          `json:"baseline"`
+	State         string                     `json:"state"`
+	Error         string                     `json:"error"`
+	Conflicts     map[string]TrackerConflict `json:"conflicts"`
 }
 type TrackerConflict struct {
 	Baseline string `json:"baseline"`
@@ -316,7 +317,7 @@ func issueIdentity(v map[string]any) (string, string, int, error) {
 }
 func trackerURL(key string) string { return "https://tracker.yandex.ru/" + url.PathEscape(key) }
 func insertMilestone(tx *sql.Tx, m Milestone) error {
-	_, e := tx.Exec("INSERT INTO milestones VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", m.ID, m.ProjectID, m.Title, m.Description, m.Type, m.Version, m.PlannedDate, m.CompletedDate, m.Status, m.Owner, m.ExternalURL, m.CreatedAt, m.UpdatedAt)
+	_, e := tx.Exec("INSERT INTO milestones(id,project_id,title,description,milestone_type,version,planned_date,completed_date,status,owner,external_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", m.ID, m.ProjectID, m.Title, m.Description, m.Type, m.Version, m.PlannedDate, m.CompletedDate, m.Status, m.Owner, m.ExternalURL, m.CreatedAt, m.UpdatedAt)
 	return e
 }
 func updateMilestone(tx *sql.Tx, m Milestone) error {
@@ -364,7 +365,11 @@ func enqueue(tx *sql.Tx, id, kind, payload string) error {
 		}
 		context = mappingHash(p)
 	}
-	_, e = tx.Exec("INSERT INTO tracker_outbox(id,local_id,kind,payload,project_id,context_hash) VALUES(?,?,?,?,?,?) ON CONFLICT(local_id,kind) DO NOTHING", token(), id, kind, payload, project, context)
+	var organization string
+	if e = tx.QueryRow("SELECT json_extract(config,'$.org_header') || ':' || json_extract(config,'$.org_id') FROM tracker_connection WHERE id='tracker'").Scan(&organization); e != nil && e != sql.ErrNoRows {
+		return e
+	}
+	_, e = tx.Exec("INSERT INTO tracker_outbox(id,local_id,kind,payload,project_id,context_hash,organization) VALUES(?,?,?,?,?,?,?) ON CONFLICT(local_id,kind) DO NOTHING", token(), id, kind, payload, project, context, organization)
 	return e
 }
 func (s *Server) fingerprint(projectID string) (string, error) {
@@ -489,7 +494,7 @@ func (s *Server) makePreview(ctx context.Context, c TrackerConfig) (TrackerPrevi
 		if sel.Query != "" {
 			body = map[string]any{"query": sel.Query}
 		}
-		batch, e := s.tracker.search(ctx, c, body)
+		batch, e := s.trackerSearch(ctx, c, body)
 		if e != nil {
 			return p, e
 		}

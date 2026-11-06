@@ -462,3 +462,99 @@ describe("Tracker UI", () => {
     );
   });
 });
+
+describe("Publication recovery", () => {
+  it.each(["en", "ru"])(
+    "shows unknown outcomes and explicit recovery in %s",
+    async (lang) => {
+      const data = state();
+      data.publications = [
+        {
+          local_id: "m1",
+          state: "cancelled_requires_recovery",
+          selection_id: "s1",
+          issue_key: "",
+        },
+      ];
+      const api = vi.fn(async (..._args: any[]) => structuredClone(data));
+      render(TrackerPanel, {
+        props: { api, projectID: "p1", milestoneID: "m1", lang, projects },
+      });
+      const button = await screen.findByRole("button", {
+        name:
+          lang === "ru"
+            ? "Восстановить результат публикации"
+            : "Recover previous publication",
+      });
+      expect(
+        screen.getByText(
+          lang === "ru"
+            ? /результат в Трекере неизвестен/
+            : /remote outcome is unknown/,
+        ),
+      ).toBeTruthy();
+      await fireEvent.click(button);
+      await waitFor(() =>
+        expect(
+          api.mock.calls.some((c) => c[0] === "/tracker/milestones/m1/recover"),
+        ).toBe(true),
+      );
+      expect(api.mock.calls.some((c) => c[0].endsWith("/publish"))).toBe(false);
+    },
+  );
+  it("shows the created issue and an actionable mapping correction", async () => {
+    const data = state();
+    data.publications = [
+      {
+        local_id: "m1",
+        state: "created_needs_mapping",
+        issue_key: "CORE-1",
+        url: "https://tracker.yandex.ru/CORE-1",
+      },
+    ];
+    const api = vi.fn(async (..._args: any[]) => structuredClone(data));
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", milestoneID: "m1", lang: "en", projects },
+    });
+    await screen.findByText(
+      "Remote issue created. Correct the project mapping, then synchronize again.",
+    );
+    expect(
+      screen.getByRole("link", { name: /CORE-1/ }).getAttribute("href"),
+    ).toBe("https://tracker.yandex.ru/CORE-1");
+  });
+  it("requires an explicit retain or detach decision after recovery", async () => {
+    const data = state();
+    data.publications = [
+      {
+        local_id: "m1",
+        state: "recovered_requires_decision",
+        selection_id: "s1",
+        issue_key: "CORE-1",
+        url: "https://tracker.yandex.ru/CORE-1",
+      },
+    ];
+    const api = vi.fn(async (..._args: any[]) => structuredClone(data));
+    render(TrackerPanel, {
+      props: { api, projectID: "p1", milestoneID: "m1", lang: "en", projects },
+    });
+    const retain = await screen.findByRole("button", {
+      name: "Retain recovered issue binding",
+    });
+    expect(
+      screen.getByRole("button", { name: "Detach issue (keep it in Tracker)" }),
+    ).toBeTruthy();
+    expect(api.mock.calls.some((c) => c[0].endsWith("/publish"))).toBe(false);
+    await fireEvent.click(retain);
+    await waitFor(() =>
+      expect(
+        api.mock.calls.some(
+          (c) =>
+            c[0].endsWith("/publish") &&
+            c[2].retain === true &&
+            c[2].selection_id === "s1",
+        ),
+      ).toBe(true),
+    );
+  });
+});

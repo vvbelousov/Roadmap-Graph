@@ -30,7 +30,7 @@ func (s *Server) demo(w http.ResponseWriter, r *http.Request) {
 	titles := [][]string{{"V1", "V2", "General availability", "Analytics studio"}, {"V1", "V2 · API v2", "V3 · Multi-tenant", "V4"}, {"V5", "V6 · Streaming v2", "V7 · New connector", "Optimization"}, {"V4 · Replication v2", "V5 · Sharding", "V2.0 · New architecture", "Migration"}}
 	stamp := now()
 	for i, n := range names {
-		_, e = tx.Exec("INSERT INTO projects VALUES(?,?,?,?,?,?,?,?,?)", ids[i], n, ids[i], "FICTIONAL DEMO — "+descs[i], colors[i], "", i, stamp, stamp)
+		_, e = tx.Exec("INSERT INTO projects(id,name,slug,description,color,icon,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", ids[i], n, ids[i], "FICTIONAL DEMO — "+descs[i], colors[i], "", i, stamp, stamp)
 		if e != nil {
 			dbfail(w, e)
 			return
@@ -55,7 +55,7 @@ func (s *Server) demo(w http.ResponseWriter, r *http.Request) {
 			if j == 3 {
 				typ = "feature"
 			}
-			_, e = tx.Exec("INSERT INTO milestones VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", fmt.Sprintf("%s-%d", ids[i], j), ids[i], t, "Fictional roadmap example. Edit or delete this milestone.", typ, fmt.Sprintf("%d.0", j+1), dates[i][j], completed, status, "Demo team", "", stamp, stamp)
+			_, e = tx.Exec("INSERT INTO milestones(id,project_id,title,description,milestone_type,version,planned_date,completed_date,status,owner,external_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", fmt.Sprintf("%s-%d", ids[i], j), ids[i], t, "Fictional roadmap example. Edit or delete this milestone.", typ, fmt.Sprintf("%d.0", j+1), dates[i][j], completed, status, "Demo team", "", stamp, stamp)
 			if e != nil {
 				dbfail(w, e)
 				return

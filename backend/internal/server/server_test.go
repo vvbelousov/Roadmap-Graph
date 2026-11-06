@@ -31,6 +31,42 @@ func (c *client) call(method, path, body string) (int, []byte) {
 }
 func (c *client) expect(method, path, body string, want int) []byte {
 	c.t.Helper()
+	if method == "PATCH" && (strings.HasPrefix(path, "/api/projects/") || strings.HasPrefix(path, "/api/milestones/")) {
+		var patch map[string]any
+		if json.Unmarshal([]byte(body), &patch) == nil {
+			if _, ok := patch["revision"]; !ok {
+				_, raw := c.call("GET", path, "")
+				var entity map[string]any
+				json.Unmarshal(raw, &entity)
+				patch["revision"] = entity["revision"]
+				body = jsonText(patch)
+			}
+		}
+	}
+	if method == "POST" && strings.HasSuffix(path, "/resolve") {
+		var payload map[string]any
+		json.Unmarshal([]byte(body), &payload)
+		if _, ok := payload["revision"]; !ok {
+			var revision int64
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/tracker/milestones/"), "/resolve")
+			c.s.db.QueryRow("SELECT revision FROM milestones WHERE id=?", id).Scan(&revision)
+			payload["revision"] = revision
+			body = jsonText(payload)
+		}
+	}
+	if method == "PUT" && path == "/api/projects/order" {
+		var payload map[string]any
+		json.Unmarshal([]byte(body), &payload)
+		if _, ok := payload["revisions"]; !ok {
+			g, _ := c.s.graph()
+			revisions := map[string]int64{}
+			for _, p := range g.Projects {
+				revisions[p.ID] = p.Revision
+			}
+			payload["revisions"] = revisions
+			body = jsonText(payload)
+		}
+	}
 	code, b := c.call(method, path, body)
 	if code != want {
 		c.t.Fatalf("%s %s got %d want %d: %s", method, path, code, want, b)

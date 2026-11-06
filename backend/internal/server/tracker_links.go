@@ -67,7 +67,7 @@ func (s *Server) remoteEdges(ctx context.Context, c TrackerConfig, locals map[st
 			var v struct {
 				Links []trackerRemoteLink `json:"links"`
 			}
-			_, e := s.tracker.request(ctx, c, "POST", fmt.Sprintf("%s/links/_list?perPage=100&page=%d", issuePath(id), page), map[string]any{"fields": []string{}, "linkTypes": types}, &v)
+			_, e := s.trackerRequest(ctx, c, "POST", fmt.Sprintf("%s/links/_list?perPage=100&page=%d", issuePath(id), page), map[string]any{"fields": []string{}, "linkTypes": types}, &v)
 			if e != nil {
 				return nil, warnings, e
 			}
@@ -344,7 +344,7 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 				if mapping == nil {
 					continue
 				}
-				_, e = s.tracker.request(ctx, c, "POST", issuePath(scope[ownerLocal])+"/links", map[string]string{"relationship": mapping.Relationship, "issue": scope[otherEndpoint(d, ownerLocal)]}, nil)
+				_, e = s.trackerRequest(ctx, c, "POST", issuePath(scope[ownerLocal])+"/links", map[string]string{"relationship": mapping.Relationship, "issue": scope[otherEndpoint(d, ownerLocal)]}, nil)
 			} else {
 				if e = s.ensureLinkIntent(ownerLocal); e != nil {
 					return e
@@ -356,7 +356,7 @@ func (s *Server) reconcileEdges(ctx context.Context, c TrackerConfig, locals map
 				if blocked > 0 {
 					return errTrackerRetryWaiting
 				}
-				_, e = s.tracker.request(ctx, c, "DELETE", issuePath(r.Source)+"/links/"+r.LinkID, nil, nil)
+				_, e = s.trackerRequest(ctx, c, "DELETE", issuePath(r.Source)+"/links/"+r.LinkID, nil, nil)
 			}
 			if e != nil {
 				return e

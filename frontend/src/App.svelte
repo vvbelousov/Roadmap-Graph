@@ -54,6 +54,9 @@
     modal = $state(""),
     editID = $state(""),
     form = $state<Record<string, any>>({});
+  let editSnapshot: Record<string, any> = {};
+  let staleEdit = $state(false);
+  let reviewChanges = $state<{ field: string; current: any; draft: any }[]>([]);
   let zoom = $state(localStorage.getItem("rg.zoom") || "year"),
     rangeStart = $state(""),
     rangeEnd = $state(""),
@@ -217,8 +220,10 @@
       ]);
       const settings = await api("/settings");
       isDemo = settings.demo === "fictional";
+      return true;
     } catch (e) {
       error = String((e as Error).message);
+      return false;
     }
   }
   async function session() {
@@ -339,6 +344,9 @@
         dependent_milestone_id: selected || graph.milestones[1]?.id || "",
         dependency_type: "requires",
       };
+    editSnapshot = { ...form };
+    staleEdit = false;
+    reviewChanges = [];
     await tick();
     dialog.showModal();
   }
@@ -359,6 +367,13 @@
       delete payload.id;
       delete payload.created_at;
       delete payload.updated_at;
+      if (editID) {
+        for (const key of Object.keys(payload)) {
+          if (key !== "revision" && payload[key] === editSnapshot[key])
+            delete payload[key];
+        }
+        payload.revision = editSnapshot.revision;
+      }
       await api(
         `/${modal === "project" ? "projects" : modal === "milestone" ? "milestones" : "dependencies"}${editID ? "/" + editID : ""}`,
         editID ? "PATCH" : "POST",
@@ -367,8 +382,57 @@
       close();
       await load();
     } catch (e) {
-      error = (e as Error).message;
+      staleEdit = /Entity changed|revision missing/.test((e as Error).message);
+      error = staleEdit
+        ? lang === "ru"
+          ? "Данные изменились с начала редактирования. Черновик сохранён. Загрузите актуальные данные и проверьте изменения."
+          : "This item changed since editing began. Your draft is preserved. Load current data and review your changes."
+        : (e as Error).message;
     }
+  }
+  async function reviewEdit() {
+    if (!(await load())) return;
+    const latest =
+      modal === "project" ? projectMap.get(editID) : byID.get(editID);
+    if (!latest) return;
+    const draft = { ...form };
+    const changed = Object.keys(draft).filter(
+      (key) => draft[key] !== editSnapshot[key],
+    );
+    reviewChanges = changed
+      .filter((key) => key !== "revision")
+      .map((key) => ({
+        field: key,
+        current: (latest as any)[key],
+        draft: draft[key],
+      }));
+    editSnapshot = { ...latest };
+    form = { ...latest };
+    for (const key of changed) if (key !== "revision") form[key] = draft[key];
+    staleEdit = false;
+    error =
+      lang === "ru"
+        ? "Актуальные данные загружены. Проверьте черновик перед сохранением."
+        : "Current data loaded. Review your draft before saving.";
+  }
+  function reviewLabel(field: string) {
+    const key =
+      field === "project_id"
+        ? "project"
+        : field === "milestone_type"
+          ? "type"
+          : field;
+    const value = (t as Record<string, unknown>)[key];
+    return typeof value === "string"
+      ? value
+      : lang === "ru"
+        ? "Порядок"
+        : "Order";
+  }
+  function reviewValue(field: string, value: any) {
+    if (field === "project_id") return projectMap.get(value)?.name || "—";
+    if (field === "status" || field === "milestone_type") return tr(value);
+    return String(value || "—");
   }
   async function remove(type: string, id: string) {
     if (!confirm(t.confirmDelete)) return;
@@ -387,7 +451,10 @@
     try {
       const ids = projects.map((x) => x.id);
       [ids[index], ids[index + delta]] = [ids[index + delta], ids[index]];
-      await api("/projects/order", "PUT", { ids });
+      await api("/projects/order", "PUT", {
+        ids,
+        revisions: Object.fromEntries(projects.map((p) => [p.id, p.revision])),
+      });
       await load();
     } catch (e) {
       error = (e as Error).message;
@@ -423,6 +490,7 @@
     try {
       await api(`/milestones/${current.id}`, "PATCH", {
         planned_date: whatDate,
+        revision: current.revision,
       });
       simulation = false;
       await load();
@@ -629,7 +697,9 @@
                 {projects}
                 projectID={project.id}
                 projectName={project.name}
-                onchange={load}
+                onchange={async () => {
+                  await load();
+                }}
                 onconnection={() => navigate("settings")}
                 onDirtyChange={(dirty) => (integrationDirty = dirty)}
               />{/key}
@@ -1132,7 +1202,9 @@
               milestoneID={current.id}
               projectID={current.project_id}
               projectName={projectMap.get(current.project_id)?.name || ""}
-              onchange={load}
+              onchange={async () => {
+                await load();
+              }}
             />{/key}
           <div class="metadata">
             <div>
@@ -1303,6 +1375,31 @@
         <button type="button" aria-label={t.close} onclick={close}>×</button>
       </div>
       {#if error}<div class="error" role="alert">{error}</div>{/if}
+      {#if staleEdit}<button type="button" onclick={reviewEdit}
+          >{lang === "ru"
+            ? "Загрузить и проверить черновик"
+            : "Load current data and review draft"}</button
+        >{/if}
+      {#if reviewChanges.length}
+        <table
+          aria-label={lang === "ru" ? "Проверка черновика" : "Draft review"}
+        >
+          <thead
+            ><tr
+              ><th>{lang === "ru" ? "Поле" : "Field"}</th><th
+                >{lang === "ru" ? "Сейчас" : "Current"}</th
+              ><th>{lang === "ru" ? "Черновик" : "Draft"}</th></tr
+            ></thead
+          >
+          <tbody
+            >{#each reviewChanges as change}<tr
+                ><th>{reviewLabel(change.field)}</th><td
+                  >{reviewValue(change.field, change.current)}</td
+                ><td>{reviewValue(change.field, change.draft)}</td></tr
+              >{/each}</tbody
+          >
+        </table>
+      {/if}
       {#if modal === "project"}<label
           >{t.name}<input
             required

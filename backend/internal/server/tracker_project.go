@@ -326,3 +326,44 @@ func normalizeProjectConfig(p *ProjectTrackerConfig) {
 		p.Links = []TrackerLinkMapping{}
 	}
 }
+
+// Only the field named by a confirmed publication's decoding error may be repaired.
+// Other operations and established field bindings retain their mapping protections.
+func (s *Server) publicationRepairCandidate(project string, old, next ProjectTrackerConfig) bool {
+	before, after := old, next
+	before.Statuses = nil
+	after.Statuses = nil
+	for key, value := range old.Statuses {
+		if next.Statuses[key] != value {
+			return false
+		}
+	}
+	before.Fields = map[string]TrackerField{}
+	for key, value := range old.Fields {
+		before.Fields[key] = value
+	}
+	if len(old.Fields) != len(next.Fields) {
+		return false
+	}
+	for key, field := range old.Fields {
+		replacement, ok := next.Fields[key]
+		if !ok {
+			return false
+		}
+		if field == replacement {
+			continue
+		}
+		if field.Writable != replacement.Writable {
+			return false
+		}
+		var errors string
+		if e := s.db.QueryRow("SELECT COALESCE(group_concat(error,' '),'') FROM tracker_publications WHERE project_id=? AND state='created_needs_mapping'", project).Scan(&errors); e != nil {
+			return false
+		}
+		if !strings.Contains(errors, "field "+field.Field+" ") {
+			return false
+		}
+		before.Fields[key] = replacement
+	}
+	return mappingHash(before) == mappingHash(after)
+}

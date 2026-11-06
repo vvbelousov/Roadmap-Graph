@@ -67,6 +67,9 @@
   let pending = $derived(
     data?.outbox?.filter((o: any) => o.local_id === milestoneID) || [],
   );
+  let publication = $derived(
+    data?.publications?.find((p: any) => p.local_id === milestoneID),
+  );
   let conflictSignature = $derived(JSON.stringify(record?.conflicts || {}));
   $effect(() => {
     milestoneID;
@@ -186,7 +189,10 @@
     await onchange();
   }
   async function resolve() {
-    await action(`/tracker/milestones/${milestoneID}/resolve`, { choices });
+    await action(`/tracker/milestones/${milestoneID}/resolve`, {
+      choices,
+      revision: record?.local_revision,
+    });
     choices = {};
   }
   function addField(k: string) {
@@ -219,7 +225,7 @@
   }
 </script>
 
-{#if !milestoneID || data?.config?.enabled || record || pending.length}
+{#if !milestoneID || data?.config?.enabled || record || pending.length || publication}
   <section class="tracker-panel" aria-label={t.heading}>
     <h2>{t.heading}</h2>
     {#if error && (milestoneID || !config)}<p class="error" role="alert">
@@ -242,6 +248,56 @@
                     : t.states.unlinked}</strong
           >
         </p>
+        {#if publication && publication.state !== "bound"}
+          <p role="status">
+            {t.publicationStates[
+              publication.state as keyof typeof t.publicationStates
+            ]}
+          </p>
+          {#if publication.issue_key}<a
+              href={publication.url}
+              target="_blank"
+              rel="noopener noreferrer">{publication.issue_key} ↗</a
+            >{/if}
+          {#if ["cancelled_requires_recovery", "outcome_unknown", "detached", "recovery_not_found"].includes(publication.state)}
+            <button
+              disabled={busy}
+              onclick={() =>
+                run(() => action(`/tracker/milestones/${milestoneID}/recover`))}
+              >{t.recoverPublication}</button
+            >
+          {/if}
+          {#if publication.state === "recovery_not_found"}
+            <button
+              disabled={busy}
+              onclick={() =>
+                run(() =>
+                  action(`/tracker/milestones/${milestoneID}/publish`, {
+                    selection_id: publication.selection_id,
+                    resume: true,
+                  }),
+                )}>{t.resumePublication}</button
+            >
+          {/if}
+          {#if publication.state === "recovered_requires_decision"}
+            <button
+              disabled={busy}
+              onclick={() =>
+                run(() =>
+                  action(`/tracker/milestones/${milestoneID}/publish`, {
+                    selection_id: publication.selection_id,
+                    retain: true,
+                  }),
+                )}>{t.retainPublication}</button
+            >
+            <button
+              disabled={busy}
+              onclick={() =>
+                run(() => action(`/tracker/milestones/${milestoneID}/unlink`))}
+              >{t.detachPublication}</button
+            >
+          {/if}
+        {/if}
         {#if record}
           <a href={record.url} target="_blank" rel="noopener noreferrer"
             >{record.issue_key} ↗</a
@@ -633,6 +689,42 @@
                 — {trackerMessage(r.error, lang)}{/if}
             </li>{/each}
         </ul>
+        {#each data.publications || [] as publication}
+          {#if publication.state !== "bound"}
+            <p role="status">
+              {t.publicationStates[
+                publication.state as keyof typeof t.publicationStates
+              ]}
+              {#if publication.issue_key}<a
+                  href={publication.url}
+                  target="_blank"
+                  rel="noopener noreferrer">{publication.issue_key} ↗</a
+                >{/if}
+            </p>
+            {#if ["cancelled_requires_recovery", "outcome_unknown", "detached", "recovery_not_found"].includes(publication.state)}
+              <button
+                disabled={busy}
+                onclick={() =>
+                  run(() =>
+                    action(
+                      `/tracker/milestones/${publication.local_id}/recover`,
+                    ),
+                  )}>{t.recoverPublication}</button
+              >
+            {/if}
+            {#if publication.state === "recovered_requires_decision"}
+              <button
+                disabled={busy}
+                onclick={() =>
+                  run(() =>
+                    action(
+                      `/tracker/milestones/${publication.local_id}/unlink`,
+                    ),
+                  )}>{t.detachPublication}</button
+              >
+            {/if}
+          {/if}
+        {/each}
         {#each data.outbox as op}{#if op.error}<p role="alert">
               {op.kind}: {trackerMessage(op.error, lang)} ({op.attempts}/8)
             </p>{/if}{/each}

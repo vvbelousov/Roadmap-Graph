@@ -17,6 +17,7 @@ const project = (
   sort_order: number,
 ) => ({
   id,
+  revision: 1,
   name,
   slug: name.toLowerCase(),
   description: name + " platform",
@@ -33,6 +34,7 @@ const milestone = (
   planned_date: string,
 ) => ({
   id,
+  revision: 1,
   project_id,
   title,
   planned_date,
@@ -317,6 +319,88 @@ describe("App DOM integration", () => {
     expect(mutation.body).not.toHaveProperty("created_at");
     expect(mutation.body).not.toHaveProperty("updated_at");
     expect(mutation.headers["X-CSRF-Token"]).toBe("csrf-test");
+  });
+  it("preserves a rejected draft and reviews newer data before retrying changed fields", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let rejected = false;
+    vi.mocked(fetch).mockImplementation(async (input, init = {}) => {
+      if (init.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        calls.push({
+          url: String(input),
+          method: "PATCH",
+          body,
+          headers: init.headers,
+        });
+        if (!rejected) {
+          rejected = true;
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({
+              error: {
+                message:
+                  "Entity changed since editing began; reload and review your draft",
+              },
+            }),
+          } as Response;
+        }
+      }
+      if (rejected && String(input).endsWith("/graph")) {
+        const latest = structuredClone(fixture);
+        latest.milestones[0].revision = 2;
+        latest.milestones[0].planned_date = "2027-06-01";
+        return { ok: true, status: 200, json: async () => latest } as Response;
+      }
+      return originalFetch(input, init);
+    });
+    await boot();
+    await fireEvent.click(
+      screen.getByRole("button", { name: "COMMON MODULE V2" }),
+    );
+    await screen.findByRole("complementary", { name: "Milestone details" });
+    await fireEvent.click(screen.getByRole("button", { name: /Edit$/ }));
+    await fireEvent.input(await screen.findByLabelText("Title"), {
+      target: { value: "My draft" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByText(/Your draft is preserved/);
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe(
+      "My draft",
+    );
+    expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+    expect(calls.find((c) => c.method === "PATCH")!.body).toEqual({
+      title: "My draft",
+      revision: 1,
+    });
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: "Load current data and review draft",
+      }),
+    );
+    await screen.findByText(
+      "Current data loaded. Review your draft before saving.",
+    );
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe(
+      "My draft",
+    );
+    expect(
+      (screen.getByLabelText("Planned date") as HTMLInputElement).value,
+    ).toBe("2027-06-01");
+    expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+    await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls.filter((c) => c.method === "PATCH").length).toBeGreaterThan(
+        1,
+      ),
+    );
+    expect(calls.filter((c) => c.method === "PATCH")[1].body).toEqual({
+      title: "My draft",
+      revision: 2,
+    });
+    await waitFor(() =>
+      expect(calls.filter((c) => c.url === "/api/settings")).toHaveLength(3),
+    );
   });
   it("requires an explicit actual completion date for completed status", async () => {
     fixture.milestones[0].status = "completed";

@@ -57,3 +57,63 @@ A separately authorized Tracker test organization is still required to verify re
 Docker build/runtime and volume backup/restore remain unverified because image retrieval stalled. Dense timeline label collisions and the 30-project/300-milestone/500-edge browser performance target were not evaluated in this integration task. The application remains one backend process per SQLite database with shared instance authentication; no enterprise RBAC or local-client optimistic concurrency was added.
 
 Nothing was committed, pushed or deployed.
+
+## Update: 2026-11-06 data-integrity stabilization
+
+This section supersedes older limitations about local optimistic concurrency and
+Docker verification. No real Tracker data was accessed. The original checkout was
+`fe088da9f558ab221e30c5d16010dd92efb0942a`, with no pre-existing working-tree changes.
+
+All four confirmed defects were reproduced by restoring the affected original
+functions in a temporary copy with the regression scaffolding: cancellation allowed
+another publication, partial creation lacked durable recovery identity, pending work
+did not prevent an organization change, and a stale edit returned 200. All four
+principal regression tests failed against those implementations.
+
+| Defect | Fix and regression coverage |
+| --- | --- |
+| Lost response → cancel → republish | Non-executable durable publication journal; original unique identity survives cancellation/restart/deletion. Read-only recovery, explicit retain/detach and original-attempt resume. `TestIntegrityCancelledPublicationRecovery`, `TestIntegrityDeletionPreservesPublicationRecovery`. |
+| Created issue with undecodable initial status | Confirmed ID/key/URL committed before field decoding; `created_needs_mapping`, recorded attempts/errors, narrowly permitted mapping repair, then initialization against the confirmed ID. `TestIntegrityPartialPublicationMappingRestart`, including rejection of a repair while unrelated publication remains queued. |
+| Organization change with queued work | API counts bindings, outbox and retained journal; persisted organization context checked independently by worker and at remote call boundaries. `TestIntegrityOrganizationPendingDefense` covers both operation and journal mismatches. |
+| Stale local form overwrites current data | Persisted revisions, transactional checks, revision triggers for actual entity changes, changed-field forms, preserved drafts and explicit comparison/review. `TestIntegrityStaleEntityEdits`, `TestIntegrityTrackerChangesAdvanceRevision`, UI stale-draft test and the real two-tab browser scenario. |
+
+Migration 4 appends schema changes transactionally and once only. The populated
+upgrade test retains a linked issue and its baseline, a pending publication's
+unique ID, destination, attempts, cooldown and error, then reopens twice. Legacy
+publication outcomes are conservative; unavailable organization identity pauses
+work. Existing migrations are unchanged. No migration makes remote calls.
+
+Frontend coverage includes English/Russian recovery controls, confirmed-issue
+links, explicit retain/detach, stale rejection, changed-field requests and draft
+preservation/review. The Playwright suite covers the existing CRUD, theme/language,
+Tracker fixtures and independent project-settings scenarios plus actual stale
+editing from two tabs. Browser tests run against an isolated temporary container
+with no Tracker credentials. HTTP-emulator tests verify synchronization behavior.
+
+The same-organization requirement and one-backend-process-per-database architecture
+remain. Recovery history is deliberately retained; switching organizations with
+that history is unsupported. Deleted local milestones cannot retain a binding.
+Legacy operations with unknown organization identity require administrator review.
+Live organization-specific Tracker workflows and real-service indexing/throttling
+are outside this pass and were intentionally not exercised. No commits, pushes or
+deployments were performed.
+
+Stabilization checks:
+
+| Check | Result |
+| --- | --- |
+| Backend `go test ./...` | Passed, existing suite plus 7 integrity regressions |
+| Backend `go test -race ./...` | Passed; no detected races |
+| Backend `go vet ./...` | Passed |
+| Backend production build | Passed, binary in `/tmp` |
+| Frontend type checks | Passed, zero errors/warnings |
+| Frontend component/unit tests | Passed, 30 tests across 4 files |
+| Frontend production build | Passed |
+| Docker production build | Passed using the repository Dockerfile |
+| Docker runtime/browser checks | Passed on the final image: isolated container and local Chrome, all 5 Playwright scenarios |
+| `git diff --check` | Passed |
+
+No application dependencies were changed. Native backend verification used Go
+1.24.7; the Docker build also verifies the Dockerfile's Go toolchain. Browser
+fixtures do not contact Tracker. Container test databases are disposable and
+separate from any user database.

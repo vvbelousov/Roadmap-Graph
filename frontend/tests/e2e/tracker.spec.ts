@@ -7,6 +7,7 @@ test("Tracker connection setup, confirmed import and explicit conflict choice", 
   test.skip(!password, "Run against an isolated local test instance.");
   const project = {
     id: "p1",
+    revision: 1,
     name: "Core",
     slug: "core",
     description: "",
@@ -16,6 +17,7 @@ test("Tracker connection setup, confirmed import and explicit conflict choice", 
   };
   const milestone = {
     id: "m1",
+    revision: 1,
     project_id: "p1",
     title: "Core V2",
     description: "",
@@ -106,6 +108,7 @@ test("Tracker connection setup, confirmed import and explicit conflict choice", 
       tracker.records = [
         {
           local_id: "m1",
+          local_revision: 1,
           issue_key: "CORE-1",
           url: milestone.external_url,
           state: "conflict",
@@ -125,6 +128,7 @@ test("Tracker connection setup, confirmed import and explicit conflict choice", 
     if (path.endsWith("/resolve")) {
       expect(route.request().postDataJSON()).toEqual({
         choices: { title: "remote" },
+        revision: 1,
       });
       tracker.records[0].state = "pending_upload";
       tracker.records[0].conflicts = {};

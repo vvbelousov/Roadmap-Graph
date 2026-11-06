@@ -17,6 +17,9 @@ var trackerMigration string
 //go:embed migrations/003_project_tracker.sql
 var projectTrackerMigration string
 
+//go:embed migrations/004_integrity.sql
+var integrityMigration string
+
 func OpenDB(path string) (*sql.DB, error) {
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -45,6 +48,25 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, e
 	}
+	tx, e := db.Begin()
+	if e != nil {
+		db.Close()
+		return nil, e
+	}
+	defer tx.Rollback()
+	var applied int
+	e = tx.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=4").Scan(&applied)
+	if e == nil && applied == 0 {
+		_, e = tx.Exec(integrityMigration)
+	}
+	if e == nil {
+		e = tx.Commit()
+	}
+	if e != nil {
+		tx.Rollback()
+		db.Close()
+		return nil, e
+	}
 	return db, nil
 }
 func (s *Server) graph() (Graph, error) {
@@ -60,7 +82,7 @@ func (s *Server) graph() (Graph, error) {
 	}
 	for r.Next() {
 		var p Project
-		e = r.Scan(&p.ID, &p.Name, &p.Slug, &p.Description, &p.Color, &p.Icon, &p.SortOrder, &p.CreatedAt, &p.UpdatedAt)
+		e = r.Scan(&p.ID, &p.Name, &p.Slug, &p.Description, &p.Color, &p.Icon, &p.SortOrder, &p.CreatedAt, &p.UpdatedAt, &p.Revision)
 		if e != nil {
 			r.Close()
 			return g, e
@@ -74,7 +96,7 @@ func (s *Server) graph() (Graph, error) {
 	}
 	for r.Next() {
 		var m Milestone
-		e = r.Scan(&m.ID, &m.ProjectID, &m.Title, &m.Description, &m.Type, &m.Version, &m.PlannedDate, &m.CompletedDate, &m.Status, &m.Owner, &m.ExternalURL, &m.CreatedAt, &m.UpdatedAt)
+		e = r.Scan(&m.ID, &m.ProjectID, &m.Title, &m.Description, &m.Type, &m.Version, &m.PlannedDate, &m.CompletedDate, &m.Status, &m.Owner, &m.ExternalURL, &m.CreatedAt, &m.UpdatedAt, &m.Revision)
 		if e != nil {
 			r.Close()
 			return g, e
