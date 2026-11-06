@@ -127,6 +127,9 @@ func (c *trackerClient) request(ctx context.Context, cfg TrackerConfig, method, 
 		req.Header.Set(cfg.OrgHeader, cfg.OrgID)
 		req.Header.Set("Content-Type", "application/json")
 		started := time.Now()
+		if run := trackerRunFrom(ctx); run != nil {
+			(*run.requests)++
+		}
 		resp, e := c.http.Do(req)
 		status := 0
 		if resp != nil {
@@ -183,6 +186,9 @@ func (c *trackerClient) request(ctx context.Context, cfg TrackerConfig, method, 
 	return nil, fmt.Errorf("Tracker retry limit")
 }
 func (c *trackerClient) search(ctx context.Context, cfg TrackerConfig, body any) ([]map[string]any, error) {
+	return c.searchWith(ctx, cfg, body, c.request)
+}
+func (c *trackerClient) searchWith(ctx context.Context, cfg TrackerConfig, body any, request func(context.Context, TrackerConfig, string, string, any, any) (http.Header, error)) ([]map[string]any, error) {
 	out := []map[string]any{}
 	path := "/v3/issues/_search?perPage=100&page=1"
 	seen := map[string]bool{}
@@ -192,7 +198,7 @@ func (c *trackerClient) search(ctx context.Context, cfg TrackerConfig, body any)
 		}
 		seen[path] = true
 		var batch []map[string]any
-		h, e := c.request(ctx, cfg, "POST", path, body, &batch)
+		h, e := request(ctx, cfg, "POST", path, body, &batch)
 		if e != nil {
 			return nil, e
 		}

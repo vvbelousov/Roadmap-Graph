@@ -33,15 +33,19 @@ type attempt struct {
 	Start time.Time
 }
 type Server struct {
-	db       *sql.DB
-	cfg      Config
-	hash     []byte
-	mux      *http.ServeMux
-	mu       sync.Mutex
-	sessions map[string]session
-	attempts map[string]attempt
-	writeMu  sync.Mutex
-	tracker  *trackerClient
+	db            *sql.DB
+	cfg           Config
+	hash          []byte
+	mux           *http.ServeMux
+	mu            sync.Mutex
+	sessions      map[string]session
+	attempts      map[string]attempt
+	writeMu       sync.Mutex
+	tracker       *trackerClient
+	trackerRunMu  sync.Mutex
+	trackerWake   chan struct{}
+	trackerManual chan string
+	trackerEpoch  uint64
 }
 
 func New(db *sql.DB, c Config) (*Server, error) {
@@ -55,6 +59,8 @@ func New(db *sql.DB, c Config) (*Server, error) {
 	c.Password = ""
 	s := &Server{db: db, cfg: c, hash: hash, mux: http.NewServeMux(), sessions: map[string]session{}, attempts: map[string]attempt{}}
 	s.tracker = newTrackerClient()
+	s.trackerWake = make(chan struct{}, 1)
+	s.trackerManual = make(chan string, 1)
 	s.routes()
 	return s, nil
 }
@@ -139,7 +145,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				s.writeMu.Lock()
-				defer s.writeMu.Unlock()
+				defer func() { s.trackerEpoch++; s.writeMu.Unlock(); s.wakeTracker() }()
+				r = r.WithContext(s.trackerContext(r.Context()))
 			}
 		}
 	}

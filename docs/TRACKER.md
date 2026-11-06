@@ -84,9 +84,9 @@ Moving a linked milestone or a milestone with pending Tracker work to another pr
 
 PATCH uses the documented `?version=N` concurrency control; HTTP 409 leaves the baseline intact and forces reconciliation. Publication persists a random unique identifier **before** HTTP creation. Recovery searches by that identifier and sends the same Tracker `unique` value on subsequent attempts, so Tracker rejects duplicate creation even if search indexing lags. A 409 remains recoverable; it never triggers a new unique identifier. Once creation is observed, the issue is linked in a local transaction. Publication and subsequent status/field updates can succeed separately and are shown as pending/error until reconciled.
 
-Reads/searches have at most four immediate attempts with exponential backoff, jitter and Retry-After handling. Field/publication/link outbox operations pause after eight failed attempts until the user resets them; retry times survive restarts. Long Retry-After delays are persisted for the connection and suppress subsequent runs until due or explicitly reset. Mutation transport errors are not blindly replayed. The next operation re-reads Tracker before writing. Requests are sequential and paced below the documented search limit (one request at a time, at most approximately 4.5 requests/second). There is a 20-second HTTP timeout, ten-minute run deadline, and twelve-minute SQLite connection lease. A crashed process's lease expires before recovery can start. The intended deployment remains **one backend process per SQLite database**; the lease also rejects overlapping synchronization runs.
+Reads/searches have at most four immediate attempts with exponential backoff, jitter and Retry-After handling. Field/publication/link outbox operations pause after eight failed attempts until the user resets them; retry times survive restarts. Long Retry-After delays are persisted for the connection and suppress subsequent runs until due or explicitly reset. Mutation transport errors are not blindly replayed. The next operation re-reads Tracker before writing. Requests are sequential and paced below the documented search limit (one request at a time, at most approximately 4.5 requests/second). There is a 20-second HTTP timeout, ten-minute run deadline, and a twelve-minute SQLite lease for incoming runs. After a crash, incoming reconciliation waits for that lease to expire; durable outgoing recovery uses the single process worker and retained operation identities. The intended deployment remains **one backend process per SQLite database**; the lease also rejects overlapping synchronization runs.
 
-The existing server write mutex serializes polling/import/mutations, so a long synchronization can delay other graph writes. Reads remain available between short database transactions. Search selections above 10,000 issues are explicitly rejected; narrow or split selections. Page pagination is not a remote snapshot and a later poll may be needed after issues change during pagination. Safe same-origin Link pagination is supported; redirects are refused and authenticated requests only use `https://api.tracker.yandex.net`. Neither API nor environment settings can override this destination.
+The server write mutex protects local work and is released around Tracker network calls; optimistic checks reject stale results. Reads remain available between short database transactions. See [outgoing uploads and incoming polling](#outgoing-uploads-and-incoming-polling) for worker coordination and query-selection limits. Search selections above 10,000 issues are explicitly rejected; narrow or split selections. Page pagination is not a remote snapshot and a later poll may be needed after issues change during pagination. Safe same-origin Link pagination is supported; redirects are refused and authenticated requests only use `https://api.tracker.yandex.net`. Neither API nor environment settings can override this destination.
 
 Each issue commits separately; a later failure never rolls back already completed remote writes. Errors remain visible in records, connection status and outbox entries. Project Retry resets only that project's failed outgoing operations; the global retry action resets only the shared connection cooldown. Synchronize starts reconciliation. Unresolved conflicts can prevent the project's last-success time advancing. Missing search results are fetched by stable ID: readable issues become `out_of_scope` (retained; uploads paused), 403 is `lost_access`, 404 is `missing_or_inaccessible`, and only an explicit 410 is labeled `deleted`. Tracker commonly cannot distinguish deletion from invisibility through 404; the integration never guesses. All states retain the local milestone. Local deletion unlinks/excludes the issue; there is no remote issue DELETE operation.
 
@@ -165,3 +165,59 @@ no remote requests. Legacy operations retain their original unique identities;
 missing organization identity pauses execution for review. Repeated startup does
 not rerun the migration. Back up the database before upgrading; older clients must
 be upgraded because unversioned local edit requests are rejected.
+
+## Outgoing uploads and incoming polling
+
+Local milestone edits commit the milestone and durable outbox intent together. A
+buffered in-process notification wakes one worker after the HTTP mutation finishes;
+SQLite remains the source of work. A one-second retry sweep and startup recovery
+also discover pending work, without waiting for the incoming polling interval.
+Repeated edits coalesce and increment a durable operation generation (migration 5).
+The publication unique ID and journal are preserved across edits, retries and restarts.
+
+Field uploads fetch the binding's stable issue ID, perform the existing three-way
+merge, patch writable fields with version protection, transition status only when
+needed, and read back the remote result. They do not search queues or fetch links.
+A normal field-only upload uses three remote requests: GET, PATCH, GET; status
+transitions and retries can require additional requests. The UI closes the edit
+form after local persistence and displays the existing localized upload/conflict/
+failure states; its graph refreshes read local APIs and do not request Tracker sync.
+
+Queue membership is checked against the issue's explicit queue identity, using the
+union of configured selections. **Query-only membership cannot be established by
+GET.** Targeted uploads for those issues pause as `out_of_scope` with an actionable
+message. Use manual synchronization (which searches and verifies the selection) or
+an explicit queue selection. There is no implicit broad-search fallback in the
+outbox worker. Legacy pending dependency operations without affected keys similarly
+require manual reconciliation once. New dependency intents retain affected keys,
+including removals, and fetch links only for their required endpoints. Ordinary
+field edits never initiate project-wide dependency reconciliation.
+
+Periodic and manual synchronization remain separate project reconciliation paths:
+they search configured selections, merge incoming fields, and reconcile dependencies.
+These paths retain the existing ability to converge outgoing differences after
+selection membership has been verified, including query selections. Manual requests
+are coalesced; different queued project requests combine into one connection-wide
+run. The single worker serializes reconciliation and uploads. A new local mutation
+invalidates a broad search at the next page boundary, allowing queued outgoing work
+to proceed without finishing that queue enumeration.
+
+The global write mutex protects only local snapshots and short local transactions.
+Every Tracker network boundary releases it, then validates the captured state after
+reacquiring it. Broad operations conservatively discard results after concurrent
+local mutations. Issue uploads validate binding/baseline/conflicts and both connection
+and project configuration; field edits may continue while requests run. Confirmation
+advances only observed baselines, preserves newer local fields, and retains newer
+operation generations for another upload. Deletes, unlinking and configuration/pause
+changes invalidate in-flight results instead of recreating entities or acknowledging
+old responses. Already sent remote mutations cannot be cancelled atomically with a
+local edit; their outcomes are reconciled using stable identities and journals.
+
+All remote calls use the existing timeout, backoff and authentication handling.
+Connection-wide 401/429 cooldown applies to both worker paths; operation retry times
+survive restart. Out-of-scope/query pauses are rechecked at the configured incoming
+interval rather than on every retry tick. Structured operation logs include scope,
+IDs, request counts, duration, attempt and conflict counts, without credentials or
+issue payloads. Deployment remains one process per SQLite database; the in-process
+worker mutex coordinates uploads and incoming runs, and the existing SQLite lease
+is retained for incoming reconciliation.

@@ -1,5 +1,66 @@
 # Verification and acceptance evidence
 
+## Update: 2026-11-06 targeted Tracker uploads
+
+Work stayed on the current branch. Verification used temporary SQLite databases,
+local fake Tracker HTTP servers, and a separate token-free backend on loopback for
+browser tests. No real Tracker organization was accessed; nothing was pushed or
+deployed.
+
+Confirmed cause: saving a milestone already persisted locally and queued intent;
+its subsequent frontend reloads called local graph APIs, not Tracker synchronization.
+The poller and manual synchronization processed that intent through whole-project
+selection/issue/dependency reconciliation while holding the global write mutex over
+network calls. This both inflated outgoing request scope and blocked local mutations.
+
+The fix adds a notification-driven durable outbox path, stable-ID field uploads,
+affected-key dependency uploads, operation generations, and optimistic validation at
+every network boundary. One worker coordinates incoming and outgoing operations;
+short local transactions retain write serialization. The existing publication
+journal/unique ID, mapping and organization checks, conflict merge, remote version
+protection, and retry/cooldown handling remain in use. Migration 5 adds a generation
+column without replacing journals or baselines. Forms already closed after local
+persistence and retained stale drafts; tests now assert that saving does not call
+`/sync`, and saves skip the unnecessary settings reload.
+
+Backend verification:
+
+- `go test ./... -timeout 90s` passed, followed by `go vet ./...`.
+- Final `go test -race ./... -timeout 10m` passed: server package 141.897 seconds,
+  55 test functions plus subtests. Native production compilation passed.
+- Added barrier-driven tests cover local-only saves, worker notifications/startup
+  recovery, a second edit during PATCH, unrelated CRUD during a slow request,
+  incoming/outgoing coordination, delete/unlink/pause/config changes, recomputing
+  merges after an edit during GET, durable retries for 401/403/409/429/503, queue
+  restrictions and query pauses, conflict resolution, publication/link lost-response
+  recovery, and manual request coalescing. Existing migration, organization,
+  publication recovery, status and cross-project link tests also passed.
+
+Frontend verification: Svelte checking reported zero errors/warnings; all 30 tests
+passed with `npm test -- --maxWorkers=1 --no-file-parallelism`, and the production
+build passed. All five existing Playwright scenarios passed against the isolated
+backend in local Chrome, including the two-tab stale draft journey and Tracker
+configuration/import/conflict choices.
+
+Request counts measured on the fake server (not real Tracker latency):
+
+| Fixture and operation | Requests | Scope |
+| --- | ---: | --- |
+| 120 issues; one title edit | 3 | GET/PATCH/GET of one stable issue ID; zero searches, zero links |
+| 40 issues; link creation loses its response, followed by recovery | 9 total | First attempt 5, recovery 4; only the two required endpoints, no selection searches |
+| Same link removal | 7 | Two issue GETs, endpoint link lists, one DELETE, confirming endpoint lists |
+
+Limits: query-only selection membership pauses targeted uploads with an actionable
+message; manual/periodic reconciliation can verify it through the existing search
+path. Legacy dependency intents without affected keys need one manual reconciliation.
+Incoming work conservatively aborts stale searches at a page boundary; requests
+already sent to Tracker cannot be undone atomically. The architecture remains one
+backend process per SQLite database. Real organization workflow/latency and deployment
+behavior were intentionally outside authorization. There are no outstanding test
+infrastructure blockers. The race suite initially exceeded a two-minute test timeout;
+it passed with a sufficient limit. One parallel Node test launch crashed; the
+single-worker rerun passed.
+
 ## Update: 2026-10-29 project-specific Tracker settings
 
 Verification used isolated temporary SQLite databases, the existing local Tracker HTTP emulator, and a separate loopback backend with no Tracker token. No real Tracker issues, running deployment, or production database were modified.

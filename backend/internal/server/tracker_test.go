@@ -16,6 +16,9 @@ import (
 )
 
 type fakeTracker struct {
+	requests                             []string
+	blockMethod, blockPath               string
+	entered, release                     chan struct{}
 	transitionTargets                    map[string]string
 	failPatch                            int
 	loseLink                             bool
@@ -44,6 +47,18 @@ func (f *fakeTracker) add(id, title string) {
 	f.issues[id] = map[string]any{"id": id, "key": "CORE-" + id, "version": float64(1), "summary": title, "description": "description", "dueDate": "2027-02-01", "doneDate": nil, "status": map[string]any{"key": "open"}, "queue": "CORE", "assignee": map[string]any{"id": "person-1"}, "fixVersions": []any{map[string]any{"id": "v1"}}}
 }
 func (f *fakeTracker) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
+	var release chan struct{}
+	if r.Method == f.blockMethod && r.URL.Path == f.blockPath && f.entered != nil {
+		close(f.entered)
+		release = f.release
+		f.entered = nil
+	}
+	f.mu.Unlock()
+	if release != nil {
+		<-release
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.Header.Get("Authorization") != "OAuth secret-test-token" || r.Header.Get("X-Org-ID") != "org" {

@@ -55,7 +55,7 @@ func (s *Server) trackerRoutes() {
 			fail(w, 404, "Project not found")
 			return
 		}
-		if _, e := s.db.Exec("UPDATE tracker_outbox SET attempts=0,next_attempt=0,error='' WHERE project_id=?", id); e != nil {
+		if _, e := s.db.Exec("UPDATE tracker_outbox SET attempts=0,next_attempt=0,error='',generation=generation+1 WHERE project_id=?", id); e != nil {
 			fail(w, 500, "Database error")
 			return
 		}
@@ -402,17 +402,26 @@ func (s *Server) scheduleTracker(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "Synchronization already running")
 		return
 	}
-	go func() {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		if id == "" {
-			s.syncTracker(ctx, TrackerConfig{})
-		} else {
-			s.syncTracker(ctx, TrackerConfig{ProjectID: id})
+	select {
+	case s.trackerManual <- id:
+	default:
+		// Different queued project requests combine into one connection-wide run.
+		select {
+		case previous := <-s.trackerManual:
+			if previous != id {
+				id = ""
+			}
+			select {
+			case s.trackerManual <- id:
+			default:
+			}
+		default:
+			select {
+			case s.trackerManual <- id:
+			default:
+			}
 		}
-	}()
+	}
 	respond(w, 202, map[string]bool{"scheduled": true})
 }
 func (s *Server) publishTracker(w http.ResponseWriter, r *http.Request) {
@@ -615,7 +624,7 @@ func (s *Server) resolveTracker(w http.ResponseWriter, r *http.Request) {
 	x.Conflicts = map[string]TrackerConflict{}
 	x.State = "pending_upload"
 	x.Error = ""
-	if e = s.saveTrackerState(m, x, true); e != nil {
+	if e = s.saveTrackerState(r.Context(), m, x, true); e != nil {
 		fail(w, 500, "Database error")
 		return
 	}
@@ -717,7 +726,7 @@ func (s *Server) mutateDependency(d Dependency, remove bool) error {
 		if e != nil {
 			return e
 		}
-		if e = enqueue(tx, owner, "links", "{}"); e != nil {
+		if e = enqueue(tx, owner, "links", jsonText(map[string]bool{edgeKey(d): true})); e != nil {
 			return e
 		}
 	}

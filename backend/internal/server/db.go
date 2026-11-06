@@ -20,6 +20,9 @@ var projectTrackerMigration string
 //go:embed migrations/004_integrity.sql
 var integrityMigration string
 
+//go:embed migrations/005_tracker_generation.sql
+var trackerGenerationMigration string
+
 func OpenDB(path string) (*sql.DB, error) {
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -58,6 +61,13 @@ func OpenDB(path string) (*sql.DB, error) {
 	e = tx.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=4").Scan(&applied)
 	if e == nil && applied == 0 {
 		_, e = tx.Exec(integrityMigration)
+	}
+	if e == nil {
+		var applied int
+		e = tx.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=5").Scan(&applied)
+		if e == nil && applied == 0 {
+			_, e = tx.Exec(trackerGenerationMigration)
+		}
 	}
 	if e == nil {
 		e = tx.Commit()

@@ -369,7 +369,7 @@ func enqueue(tx *sql.Tx, id, kind, payload string) error {
 	if e = tx.QueryRow("SELECT json_extract(config,'$.org_header') || ':' || json_extract(config,'$.org_id') FROM tracker_connection WHERE id='tracker'").Scan(&organization); e != nil && e != sql.ErrNoRows {
 		return e
 	}
-	_, e = tx.Exec("INSERT INTO tracker_outbox(id,local_id,kind,payload,project_id,context_hash,organization) VALUES(?,?,?,?,?,?,?) ON CONFLICT(local_id,kind) DO NOTHING", token(), id, kind, payload, project, context, organization)
+	_, e = tx.Exec("INSERT INTO tracker_outbox(id,local_id,kind,payload,project_id,context_hash,organization) VALUES(?,?,?,?,?,?,?) ON CONFLICT(local_id,kind) DO UPDATE SET generation=tracker_outbox.generation+1,payload=CASE WHEN excluded.kind='links' THEN json_patch(tracker_outbox.payload,excluded.payload) ELSE tracker_outbox.payload END", token(), id, kind, payload, project, context, organization)
 	return e
 }
 func (s *Server) fingerprint(projectID string) (string, error) {
@@ -629,36 +629,46 @@ func (s *Server) applyPreview(p TrackerPreview) error {
 	return tx.Commit()
 }
 
-// StartTracker runs the optional poller within the existing server process.
-func (s *Server) StartTracker(ctx context.Context) {
+// StartTracker uses one bounded worker for incoming and outgoing work. The outbox
+// is durable; the notification only avoids waiting for the retry ticker.
+func (s *Server) StartTracker(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		next := time.Now()
+		next := time.Now().Add(time.Second)
+		s.wakeTracker() // recover durable pending operations after restart
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case id := <-s.trackerManual:
+				s.syncTracker(ctx, TrackerConfig{ProjectID: id})
+				// A duplicate accepted before lease acquisition is already covered.
+				select {
+				case queued := <-s.trackerManual:
+					if queued != id && id != "" {
+						select {
+						case s.trackerManual <- queued:
+						default:
+						}
+					}
+				default:
+				}
+			case <-s.trackerWake:
+				s.processTrackerOutbox(ctx)
 			case <-ticker.C:
-				if time.Now().Before(next) {
-					continue
+				s.processTrackerOutbox(ctx)
+				if !time.Now().Before(next) {
+					s.syncTracker(ctx, TrackerConfig{})
+					c, _ := s.connectionConfig()
+					next = time.Now().Add(time.Duration(max(30, c.Interval)) * time.Second)
 				}
-				s.writeMu.Lock()
-				c, e := s.trackerConfig()
-				if e == nil && c.Enabled {
-					run, cancel := context.WithTimeout(ctx, 10*time.Minute)
-					s.syncTracker(run, c)
-					cancel()
-				}
-				s.writeMu.Unlock()
-				interval := c.Interval
-				if interval < 30 {
-					interval = 30
-				}
-				next = time.Now().Add(time.Duration(interval) * time.Second)
 			}
 		}
 	}()
+	return done
 }
 
 // Field identity and format anchor persisted baselines. Status mappings can be

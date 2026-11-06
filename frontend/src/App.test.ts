@@ -319,6 +319,9 @@ describe("App DOM integration", () => {
     expect(mutation.body).not.toHaveProperty("created_at");
     expect(mutation.body).not.toHaveProperty("updated_at");
     expect(mutation.headers["X-CSRF-Token"]).toBe("csrf-test");
+    await waitFor(() => expect(document.querySelector("dialog[open]")).toBeNull());
+    expect(calls.some((c) => c.url.endsWith("/sync"))).toBe(false);
+    expect(calls.filter((c) => c.url === "/api/settings")).toHaveLength(1);
   });
   it("preserves a rejected draft and reviews newer data before retrying changed fields", async () => {
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
@@ -399,7 +402,7 @@ describe("App DOM integration", () => {
       revision: 2,
     });
     await waitFor(() =>
-      expect(calls.filter((c) => c.url === "/api/settings")).toHaveLength(3),
+      expect(calls.filter((c) => c.url === "/api/settings")).toHaveLength(2),
     );
   });
   it("requires an explicit actual completion date for completed status", async () => {

@@ -380,7 +380,14 @@ func (s *Server) ensureLinkIntent(id string) error {
 		return e
 	}
 	defer tx.Rollback()
-	if e = enqueue(tx, id, "links", "{}"); e != nil {
+	var n int
+	if e = tx.QueryRow("SELECT count(*) FROM tracker_outbox WHERE local_id=? AND kind='links'", id).Scan(&n); e != nil {
+		return e
+	}
+	if n == 0 {
+		e = enqueue(tx, id, "links", "{}")
+	}
+	if e != nil {
 		return e
 	}
 	return tx.Commit()

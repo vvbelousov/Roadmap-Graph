@@ -20,17 +20,21 @@ func (s *Server) trackerRequest(ctx context.Context, c TrackerConfig, method, pa
 	if e := s.verifyConnectionIdentity(c); e != nil {
 		return nil, e
 	}
-	return s.tracker.request(ctx, c, method, path, body, out)
+	var h http.Header
+	e := s.trackerNetwork(ctx, func() (e error) { h, e = s.tracker.request(ctx, c, method, path, body, out); return })
+	return h, e
 }
 func (s *Server) trackerIssue(ctx context.Context, c TrackerConfig, id string) (map[string]any, error) {
 	if e := s.verifyConnectionIdentity(c); e != nil {
 		return nil, e
 	}
-	return s.tracker.issue(ctx, c, id)
+	var v map[string]any
+	_, e := s.trackerRequest(ctx, c, "GET", issuePath(id), nil, &v)
+	return v, e
 }
 func (s *Server) trackerSearch(ctx context.Context, c TrackerConfig, body map[string]any) ([]map[string]any, error) {
 	if e := s.verifyConnectionIdentity(c); e != nil {
 		return nil, e
 	}
-	return s.tracker.search(ctx, c, body)
+	return s.tracker.searchWith(ctx, c, body, s.trackerRequest)
 }

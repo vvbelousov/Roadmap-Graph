@@ -212,14 +212,16 @@
     }
     return data;
   }
-  async function load() {
+  async function load(refreshSettings = true) {
     try {
       [graph, conflicts] = await Promise.all([
         api("/graph"),
         api("/analysis/conflicts"),
       ]);
-      const settings = await api("/settings");
-      isDemo = settings.demo === "fictional";
+      if (refreshSettings) {
+        const settings = await api("/settings");
+        isDemo = settings.demo === "fictional";
+      }
       return true;
     } catch (e) {
       error = String((e as Error).message);
@@ -380,7 +382,7 @@
         payload,
       );
       close();
-      await load();
+      await load(false);
     } catch (e) {
       staleEdit = /Entity changed|revision missing/.test((e as Error).message);
       error = staleEdit

@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net/url"
 	"strings"
@@ -35,7 +37,42 @@ func mergeTracker(local, remote, base map[string]string) (map[string]string, map
 	}
 	return merged, next, conflicts
 }
-func (s *Server) saveTrackerState(m Milestone, x TrackerRecord, pending bool) error {
+func (s *Server) saveTrackerState(ctx context.Context, m Milestone, x TrackerRecord, pending bool) error {
+	original := m
+	preserved := false
+	run := trackerRunFrom(ctx)
+	var generation int64
+	s.db.QueryRow("SELECT generation FROM tracker_outbox WHERE local_id=? AND kind='update'", m.ID).Scan(&generation)
+	if run != nil && run.scope != nil {
+		if e := s.validateTrackerRun(run); e != nil {
+			return e
+		}
+		current, e := s.trackerMilestone(m.ID)
+		if e != nil {
+			return errTrackerStale
+		}
+		desired, previous, latest := localFields(m), localFields(run.scope.saved), localFields(current)
+		for k, v := range latest {
+			if v != previous[k] {
+				desired[k] = v
+				if conflict, ok := x.Conflicts[k]; ok {
+					conflict.Local = v
+					x.Conflicts[k] = conflict
+				}
+				preserved = true
+			}
+		}
+		setFields(&current, desired)
+		current.ExternalURL = m.ExternalURL
+		m = current
+		s.db.QueryRow("SELECT generation FROM tracker_outbox WHERE local_id=? AND kind='update'", m.ID).Scan(&generation)
+		if generation > run.scope.generation || preserved {
+			pending = true
+			if len(x.Conflicts) == 0 {
+				x.State = "pending_upload"
+			}
+		}
+	}
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
@@ -48,16 +85,44 @@ func (s *Server) saveTrackerState(m Milestone, x TrackerRecord, pending bool) er
 		return e
 	}
 	if pending {
-		e = enqueue(tx, m.ID, "update", "{}")
+		// Internal reconciliation must not increment the user's operation generation.
+		var n int
+		e = tx.QueryRow("SELECT count(*) FROM tracker_outbox WHERE local_id=? AND kind='update'", m.ID).Scan(&n)
+		if e == nil && n == 0 {
+			e = enqueue(tx, m.ID, "update", "{}")
+		}
 	} else {
-		_, e = tx.Exec("DELETE FROM tracker_outbox WHERE local_id=? AND kind='update'", m.ID)
+		_, e = tx.Exec("DELETE FROM tracker_outbox WHERE local_id=? AND kind='update' AND generation=?", m.ID, generation)
 	}
 	if e != nil {
 		return e
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	if run != nil && run.scope != nil {
+		c, e := s.resolveTrackerConfig(m.ProjectID)
+		if e != nil {
+			return e
+		}
+		s.refreshIssueContext(ctx, c, original, x)
+		if run.scope.generation == 0 && generation == 0 {
+			s.db.QueryRow("SELECT generation FROM tracker_outbox WHERE local_id=? AND kind='update'", m.ID).Scan(&run.scope.generation)
+		}
+	}
+	return nil
 }
-func (s *Server) recordFailure(x TrackerRecord, e error) error {
+func (s *Server) recordFailure(ctx context.Context, x TrackerRecord, e error) error {
+	if errors.Is(e, errTrackerStale) {
+		return e
+	}
+	if run := trackerRunFrom(ctx); run != nil && run.scope != nil {
+		var generation int64
+		s.db.QueryRow("SELECT generation FROM tracker_outbox WHERE local_id=? AND kind='update'", x.LocalID).Scan(&generation)
+		if generation != run.scope.generation {
+			return e
+		}
+	}
 	x.State = "error"
 	x.Error = e.Error()
 	switch httpCode(e) {
@@ -92,21 +157,34 @@ func (s *Server) recordFailure(x TrackerRecord, e error) error {
 	return nil
 }
 func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Milestone, x TrackerRecord, issue map[string]any, inSelection bool) error {
+	if run := trackerRunFrom(ctx); run != nil && run.scope != nil {
+		if e := s.validateTrackerRun(run); e != nil {
+			return e
+		}
+		current, e := s.trackerMilestone(m.ID)
+		if e != nil {
+			return errTrackerStale
+		}
+		m = current
+		run.scope.saved = m
+		s.db.QueryRow("SELECT generation FROM tracker_outbox WHERE local_id=? AND kind='update'", m.ID).Scan(&run.scope.generation)
+	}
+
 	remote, e := remoteFields(issue, c)
 	if e != nil {
-		return s.recordFailure(x, e)
+		return s.recordFailure(ctx, x, e)
 	}
 	id, key, ver, e := issueIdentity(issue)
 	if e != nil {
-		return s.recordFailure(x, e)
+		return s.recordFailure(ctx, x, e)
 	}
 	if id != x.ExternalID {
-		return s.recordFailure(x, fmt.Errorf("stable issue ID changed"))
+		return s.recordFailure(ctx, x, fmt.Errorf("stable issue ID changed"))
 	}
 	merged, base, conflicts := mergeTracker(localFields(m), remote, x.Baseline)
 	setFields(&m, merged)
 	if e = validateMilestone(m); e != nil {
-		return s.recordFailure(x, e)
+		return s.recordFailure(ctx, x, e)
 	}
 	x.Key = key
 	x.URL = trackerURL(key)
@@ -151,7 +229,7 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 		x.State = "error"
 	}
 	// Persist incoming merges and conflicts before any network mutation.
-	if e = s.saveTrackerState(m, x, pending); e != nil {
+	if e = s.saveTrackerState(ctx, m, x, pending); e != nil {
 		return e
 	}
 	if len(conflicts) > 0 || !inSelection || x.Error != "" {
@@ -166,25 +244,25 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 		if attempts >= 8 {
 			x.Error = "outgoing retry limit reached; reset failed operations"
 		}
-		return s.saveTrackerState(m, x, true)
+		return s.saveTrackerState(ctx, m, x, true)
 	}
 	if len(patch) > 0 {
 		_, e = s.trackerRequest(ctx, c, "PATCH", fmt.Sprintf("%s?version=%d", issuePath(id), ver), patch, nil)
 		if e != nil {
-			return s.recordFailure(x, e)
+			return s.recordFailure(ctx, x, e)
 		}
 	}
 	if status != "" {
 		fresh, e := s.trackerIssue(ctx, c, id)
 		if e != nil {
-			return s.recordFailure(x, e)
+			return s.recordFailure(ctx, x, e)
 		}
 		f, e := remoteFields(fresh, c)
 		if e != nil {
-			return s.recordFailure(x, e)
+			return s.recordFailure(ctx, x, e)
 		}
 		if f["status"] != remote["status"] && f["status"] != merged["status"] {
-			return s.recordFailure(x, fmt.Errorf("status changed before transition; reconcile again"))
+			return s.recordFailure(ctx, x, fmt.Errorf("status changed before transition; reconcile again"))
 		}
 		if f["status"] != merged["status"] {
 			var transitions []struct {
@@ -195,23 +273,23 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 			}
 			_, e = s.trackerRequest(ctx, c, "GET", issuePath(id)+"/transitions", nil, &transitions)
 			if e != nil {
-				return s.recordFailure(x, e)
+				return s.recordFailure(ctx, x, e)
 			}
 			transition := ""
 			for _, t := range transitions {
 				if t.To.Key == status {
 					if transition != "" {
-						return s.recordFailure(x, fmt.Errorf("ambiguous status transition"))
+						return s.recordFailure(ctx, x, fmt.Errorf("ambiguous status transition"))
 					}
 					transition = t.ID
 				}
 			}
 			if transition == "" {
-				return s.recordFailure(x, fmt.Errorf("status transition unavailable or requires workflow configuration"))
+				return s.recordFailure(ctx, x, fmt.Errorf("status transition unavailable or requires workflow configuration"))
 			}
 			_, e = s.trackerRequest(ctx, c, "POST", issuePath(id)+"/transitions/"+url.PathEscape(transition)+"/_execute", map[string]any{}, nil)
 			if e != nil {
-				return s.recordFailure(x, e)
+				return s.recordFailure(ctx, x, e)
 			}
 		}
 	}
@@ -221,15 +299,15 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 	// Read back; baseline only acknowledges values actually observed remotely.
 	fresh, e := s.trackerIssue(ctx, c, id)
 	if e != nil {
-		return s.recordFailure(x, e)
+		return s.recordFailure(ctx, x, e)
 	}
 	after, e := remoteFields(fresh, c)
 	if e != nil {
-		return s.recordFailure(x, e)
+		return s.recordFailure(ctx, x, e)
 	}
 	_, x.Key, x.Version, e = issueIdentity(fresh)
 	if e != nil {
-		return s.recordFailure(x, e)
+		return s.recordFailure(ctx, x, e)
 	}
 	stillPending := false
 	for k, v := range after {
@@ -243,11 +321,24 @@ func (s *Server) reconcileIssue(ctx context.Context, c TrackerConfig, m Mileston
 	if stillPending {
 		x.State = "pending_upload"
 	}
-	return s.saveTrackerState(m, x, stillPending)
+	return s.saveTrackerState(ctx, m, x, stillPending)
 }
 
 // The SQLite connection lease and rate-limit cooldown are shared across all projects.
-func (s *Server) syncTracker(ctx context.Context, requested TrackerConfig) (err error) {
+func (s *Server) syncTracker(ctx context.Context, requested TrackerConfig) error {
+	if !s.trackerRunMu.TryLock() {
+		return fmt.Errorf("synchronization already running")
+	}
+	defer s.trackerRunMu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	ctx = s.trackerContext(ctx)
+	started := time.Now()
+	e := s.syncTrackerLocked(ctx, requested)
+	slog.InfoContext(ctx, "Tracker incoming reconciliation", "project_id", requested.ProjectID, "duration_ms", time.Since(started).Milliseconds(), "remote_requests", *trackerRunFrom(ctx).requests, "retry", e != nil, "stale", errors.Is(e, errTrackerStale))
+	return e
+}
+func (s *Server) syncTrackerLocked(ctx context.Context, requested TrackerConfig) (err error) {
 	g, e := s.connectionConfig()
 	if e != nil {
 		return e
@@ -422,17 +513,18 @@ func (s *Server) syncProjectTracker(ctx context.Context, c TrackerConfig) error 
 			continue
 		}
 		v, in := selected[x.ExternalID]
+		issueCtx := s.issueContext(ctx, c, ms[x.LocalID], x)
 		if !in {
-			v, e = s.trackerIssue(ctx, c, x.ExternalID)
+			v, e = s.trackerIssue(issueCtx, c, x.ExternalID)
 			if e != nil {
-				if er := s.recordFailure(x, e); er != nil {
+				if er := s.recordFailure(issueCtx, x, e); er != nil {
 					return er
 				}
 				anyError = true
 				continue
 			}
 		}
-		if e = s.reconcileIssue(ctx, c, ms[x.LocalID], x, v, in); e != nil {
+		if e = s.reconcileIssue(issueCtx, c, ms[x.LocalID], x, v, in); e != nil {
 			return e
 		}
 		var state string
@@ -449,6 +541,9 @@ func (s *Server) syncProjectTracker(ctx context.Context, c TrackerConfig) error 
 		return e
 	}
 	if e = s.reconcileEdges(ctx, c, locals); e != nil {
+		if errors.Is(e, errTrackerStale) {
+			return e
+		}
 		if _, paused := e.(trackerDependencyPause); paused {
 			return e
 		}
@@ -560,6 +655,9 @@ func (s *Server) publishPending(ctx context.Context, c TrackerConfig) error {
 			}
 		}
 		if e != nil {
+			if errors.Is(e, errTrackerStale) {
+				return e
+			}
 			delay := time.Duration(1<<min(op.Attempts, 10)) * time.Second
 			_, dbErr := s.db.Exec("UPDATE tracker_outbox SET attempts=attempts+1,next_attempt=?,error=? WHERE id=?", retryTime(e, time.Now().Add(delay).Unix()), e.Error(), op.ID)
 			if dbErr != nil {
